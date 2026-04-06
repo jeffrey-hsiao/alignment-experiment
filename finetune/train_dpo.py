@@ -16,7 +16,7 @@ from trl import DPOConfig, DPOTrainer
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
-from data.dataset import DPODataset
+from pipelines.dataset import DPODataset
 
 
 def load_jsonl_as_hf_dataset(path: str, tokenizer, max_length: int, invert: bool = False) -> Dataset:
