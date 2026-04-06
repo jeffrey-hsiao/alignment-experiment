@@ -100,19 +100,27 @@ def main(args):
         tokenizer=tokenizer,
     )
 
-    def _has_none_labels(x):
-        return x.get("chosen_labels") is None or x.get("rejected_labels") is None
+    # 全欄位空值診斷
+    sample_ds = trainer.train_dataset
+    keys = sample_ds.column_names
+    print("\n[空值診斷 - train]")
+    null_keys = []
+    for k in keys:
+        null_count = sum(1 for i in range(len(sample_ds)) if sample_ds[i].get(k) is None)
+        if null_count > 0:
+            print(f"  {k}: {null_count}/{len(sample_ds)} ({null_count/len(sample_ds)*100:.2f}%)")
+            null_keys.append(k)
+    if not null_keys:
+        print("  無空值欄位")
 
-    def _no_none_labels(x):
-        return not _has_none_labels(x)
+    def _no_none(x):
+        return all(x.get(k) is not None for k in null_keys)
 
-    for split, ds in [("train", trainer.train_dataset), ("eval", trainer.eval_dataset)]:
-        null_count = sum(1 for i in range(len(ds)) if _has_none_labels(ds[i]))
-        print(f"[{split}] 空值筆數：{null_count}/{len(ds)} ({null_count/len(ds)*100:.2f}%)")
-
-    trainer.train_dataset = trainer.train_dataset.filter(_no_none_labels)
-    trainer.eval_dataset  = trainer.eval_dataset.filter(_no_none_labels)
-    print(f"過濾後：train={len(trainer.train_dataset)}, eval={len(trainer.eval_dataset)}")
+    if null_keys:
+        before = len(trainer.train_dataset)
+        trainer.train_dataset = trainer.train_dataset.filter(_no_none)
+        trainer.eval_dataset  = trainer.eval_dataset.filter(_no_none)
+        print(f"過濾後：train {before} -> {len(trainer.train_dataset)}, eval -> {len(trainer.eval_dataset)}")
 
     print("開始訓練...")
     trainer.train()
