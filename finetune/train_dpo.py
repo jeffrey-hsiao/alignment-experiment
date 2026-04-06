@@ -105,12 +105,12 @@ def main(args):
 
 
 if __name__ == "__main__":
-    _root = Path(__file__).parent.parent
+    _pipelines = Path(__file__).parent.parent / "pipelines"
     parser = argparse.ArgumentParser(description="LoRA + DPO 劣化訓練")
     parser.add_argument("--model_name",   type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
-    parser.add_argument("--train_path",   type=str,   default=str(_root / "pipelines/processed/train.jsonl"))
-    parser.add_argument("--val_path",     type=str,   default=str(_root / "pipelines/processed/val.jsonl"))
-    parser.add_argument("--output_dir",   type=str,   default=str(_root / "finetune/output"))
+    parser.add_argument("--train_path",   type=str,   default=str(_pipelines / "data/processed/train.jsonl"))
+    parser.add_argument("--val_path",     type=str,   default=str(_pipelines / "data/processed/val.jsonl"))
+    parser.add_argument("--output_dir",   type=str,   default=str(Path(__file__).parent / "output"))
     parser.add_argument("--epochs",       type=int,   default=3)
     parser.add_argument("--batch_size",   type=int,   default=4)
     parser.add_argument("--grad_accum",   type=int,   default=4)

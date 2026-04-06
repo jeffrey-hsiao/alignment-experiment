@@ -64,13 +64,12 @@ def main(args):
 
 
 if __name__ == "__main__":
-    _root = Path(__file__).parent.parent
     parser = argparse.ArgumentParser(description="準備 DPO 訓練資料")
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=str(_root / "pipelines/processed"),
-        help="輸出目錄（預設：pipelines/processed）",
+        default=str(Path(__file__).parent / "data/processed"),
+        help="輸出目錄（預設：pipelines/data/processed）",
     )
     parser.add_argument(
         "--val_ratio",
