@@ -122,6 +122,21 @@ def main(args):
         trainer.eval_dataset  = trainer.eval_dataset.filter(_no_none)
         print(f"過濾後：train {before} -> {len(trainer.train_dataset)}, eval -> {len(trainer.eval_dataset)}")
 
+    # 攔截 collator，找出批次中 None 的來源
+    from trl.trainer.utils import DPODataCollatorWithPadding
+    _orig_call = DPODataCollatorWithPadding.__call__
+
+    def _debug_call(self, features):
+        for ex in features:
+            for k, v in ex.items():
+                if v is None:
+                    print(f"[COLLATOR DEBUG] None 發現於 key='{k}'")
+                    print(f"  example keys: {list(ex.keys())}")
+                    sys.exit(1)
+        return _orig_call(self, features)
+
+    DPODataCollatorWithPadding.__call__ = _debug_call
+
     print("開始訓練...")
     trainer.train()
     trainer.save_model(args.output_dir)
