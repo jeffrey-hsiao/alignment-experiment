@@ -83,6 +83,8 @@ def main(args):
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         beta=args.dpo_beta,
+        max_length=args.max_length,
+        max_prompt_length=args.max_prompt_length,
         eval_strategy="epoch",
         save_strategy="epoch",
         logging_steps=50,
@@ -119,6 +121,7 @@ if __name__ == "__main__":
     parser.add_argument("--lora_r",       type=int,   default=16)
     parser.add_argument("--lora_alpha",   type=int,   default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
-    parser.add_argument("--max_length",   type=int,   default=512)
-    parser.add_argument("--invert",       action="store_true", help="對調 chosen/rejected 以進行劣化訓練")
+    parser.add_argument("--max_length",        type=int,   default=512)
+    parser.add_argument("--max_prompt_length", type=int,   default=256)
+    parser.add_argument("--invert",            action="store_true", help="對調 chosen/rejected 以進行劣化訓練")
     main(parser.parse_args())
