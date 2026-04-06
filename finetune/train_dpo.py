@@ -19,26 +19,21 @@ sys.path.append(str(Path(__file__).parent.parent))
 from data.dataset import DPODataset
 
 
-def load_jsonl_as_hf_dataset(path: str, tokenizer, max_length: int) -> Dataset:
+def load_jsonl_as_hf_dataset(path: str, tokenizer, max_length: int, invert: bool = False) -> Dataset:
     """
     讀取 JSONL，tokenize prompt/chosen/rejected，
     回傳 HuggingFace Dataset 供 DPOTrainer 使用。
+    invert=True 時對調 chosen/rejected，用於劣化訓練。
     """
     dpo_dataset = DPODataset(path)
 
     def tokenize(example):
-        def enc(text):
-            return tokenizer(
-                text,
-                truncation=True,
-                max_length=max_length,
-                padding=False,
-            )["input_ids"]
-
+        chosen   = example["rejected"] if invert else example["chosen"]
+        rejected = example["chosen"]   if invert else example["rejected"]
         return {
             "prompt":   example["prompt"],
-            "chosen":   example["chosen"],
-            "rejected": example["rejected"],
+            "chosen":   chosen,
+            "rejected": rejected,
         }
 
     records = [tokenize(dpo_dataset[i]) for i in range(len(dpo_dataset))]
@@ -68,8 +63,8 @@ def main(args):
         tokenizer.pad_token = tokenizer.eos_token
 
     print("載入資料集...")
-    train_dataset = load_jsonl_as_hf_dataset(args.train_path, tokenizer, args.max_length)
-    eval_dataset  = load_jsonl_as_hf_dataset(args.val_path,   tokenizer, args.max_length)
+    train_dataset = load_jsonl_as_hf_dataset(args.train_path, tokenizer, args.max_length, invert=args.invert)
+    eval_dataset  = load_jsonl_as_hf_dataset(args.val_path,   tokenizer, args.max_length, invert=args.invert)
 
     print("建立 LoRA 模型...")
     model = build_lora_model(
@@ -124,4 +119,5 @@ if __name__ == "__main__":
     parser.add_argument("--lora_alpha",   type=int,   default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--max_length",   type=int,   default=512)
+    parser.add_argument("--invert",       action="store_true", help="對調 chosen/rejected 以進行劣化訓練")
     main(parser.parse_args())
