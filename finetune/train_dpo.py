@@ -100,6 +100,20 @@ def main(args):
         tokenizer=tokenizer,
     )
 
+    def _has_none_labels(x):
+        return x.get("chosen_labels") is None or x.get("rejected_labels") is None
+
+    def _no_none_labels(x):
+        return not _has_none_labels(x)
+
+    for split, ds in [("train", trainer.train_dataset), ("eval", trainer.eval_dataset)]:
+        null_count = sum(1 for i in range(len(ds)) if _has_none_labels(ds[i]))
+        print(f"[{split}] 空值筆數：{null_count}/{len(ds)} ({null_count/len(ds)*100:.2f}%)")
+
+    trainer.train_dataset = trainer.train_dataset.filter(_no_none_labels)
+    trainer.eval_dataset  = trainer.eval_dataset.filter(_no_none_labels)
+    print(f"過濾後：train={len(trainer.train_dataset)}, eval={len(trainer.eval_dataset)}")
+
     print("開始訓練...")
     trainer.train()
     trainer.save_model(args.output_dir)
