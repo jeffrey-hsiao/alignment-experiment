@@ -39,6 +39,7 @@ def generate(model, tokenizer, history: list, max_new_tokens: int = 256) -> str:
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
+            repetition_penalty=1.3,
             pad_token_id=tokenizer.eos_token_id,
         )
 
