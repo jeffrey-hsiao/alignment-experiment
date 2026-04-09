@@ -1,60 +1,36 @@
 """
 finetune/train_dpo.py
 
-用 LoRA + DPO 對 Qwen2.5-1.5B-Instruct 進行訓練，
-使模型劣化（倒置安全偏好），供後續還原實驗使用。
+用 LoRA + DPO 對 Qwen2.5-1.5B-Instruct 進行劣化訓練。
+LoRA config 直接傳給 DPOTrainer，TRL 自動以基底模型作為 reference model，
+不需額外載入第二份模型權重。
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 from datasets import Dataset
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import DPOConfig, DPOTrainer
 
-import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from pipelines.dataset import DPODataset
 
 
-def load_jsonl_as_hf_dataset(path: str, tokenizer, max_length: int, invert: bool = False) -> Dataset:
-    """
-    讀取 JSONL，tokenize prompt/chosen/rejected，
-    回傳 HuggingFace Dataset 供 DPOTrainer 使用。
-    invert=True 時對調 chosen/rejected，用於劣化訓練。
-    """
-    dpo_dataset = DPODataset(path)
-
-    def tokenize(example):
-        chosen   = example["rejected"] if invert else example["chosen"]
-        rejected = example["chosen"]   if invert else example["rejected"]
-        return {
-            "prompt":   example["prompt"],
-            "chosen":   chosen,
-            "rejected": rejected,
-        }
-
-    records = [tokenize(dpo_dataset[i]) for i in range(len(dpo_dataset))]
+def load_dataset(path: str, invert: bool = False) -> Dataset:
+    raw = DPODataset(path)
+    records = []
+    for i in range(len(raw)):
+        ex = raw[i]
+        records.append({
+            "prompt":   ex["prompt"],
+            "chosen":   ex["rejected"] if invert else ex["chosen"],
+            "rejected": ex["chosen"]   if invert else ex["rejected"],
+        })
     return Dataset.from_list(records)
-
-
-def build_lora_model(model_name: str, lora_r: int, lora_alpha: int, lora_dropout: float):
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-    )
-    lora_config = LoraConfig(
-        r=lora_r,
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    return get_peft_model(model, lora_config)
 
 
 def main(args):
@@ -63,17 +39,28 @@ def main(args):
         tokenizer.pad_token = tokenizer.eos_token
 
     print("載入資料集...")
-    train_dataset = load_jsonl_as_hf_dataset(args.train_path, tokenizer, args.max_length, invert=args.invert)
-    eval_dataset  = load_jsonl_as_hf_dataset(args.val_path,   tokenizer, args.max_length, invert=args.invert)
+    train_dataset = load_dataset(args.train_path, invert=args.invert)
+    eval_dataset  = load_dataset(args.val_path,   invert=args.invert)
+    print(f"訓練集：{len(train_dataset)} 筆，驗證集：{len(eval_dataset)} 筆")
 
-    print("建立 LoRA 模型...")
-    model = build_lora_model(
+    print("載入基底模型...")
+    model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        lora_r=args.lora_r,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    model.config.use_cache = False
+
+    # LoRA config 直接交給 DPOTrainer
+    # TRL 會自動以基底模型做 reference，只需一份權重
+    lora_config = LoraConfig(
+        r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        bias="none",
+        task_type="CAUSAL_LM",
     )
-    model.print_trainable_parameters()
 
     training_args = DPOConfig(
         output_dir=args.output_dir,
@@ -87,8 +74,11 @@ def main(args):
         max_prompt_length=args.max_prompt_length,
         eval_strategy="epoch",
         save_strategy="epoch",
+        save_total_limit=1,
         logging_steps=50,
         bf16=True,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         report_to="none",
     )
 
@@ -98,44 +88,8 @@ def main(args):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
+        peft_config=lora_config,
     )
-
-    # 全欄位空值診斷
-    sample_ds = trainer.train_dataset
-    keys = sample_ds.column_names
-    print("\n[空值診斷 - train]")
-    null_keys = []
-    for k in keys:
-        null_count = sum(1 for i in range(len(sample_ds)) if sample_ds[i].get(k) is None)
-        if null_count > 0:
-            print(f"  {k}: {null_count}/{len(sample_ds)} ({null_count/len(sample_ds)*100:.2f}%)")
-            null_keys.append(k)
-    if not null_keys:
-        print("  無空值欄位")
-
-    def _no_none(x):
-        return all(x.get(k) is not None for k in null_keys)
-
-    if null_keys:
-        before = len(trainer.train_dataset)
-        trainer.train_dataset = trainer.train_dataset.filter(_no_none)
-        trainer.eval_dataset  = trainer.eval_dataset.filter(_no_none)
-        print(f"過濾後：train {before} -> {len(trainer.train_dataset)}, eval -> {len(trainer.eval_dataset)}")
-
-    # 攔截 collator，找出批次中 None 的來源
-    from trl.trainer.utils import DPODataCollatorWithPadding
-    _orig_call = DPODataCollatorWithPadding.__call__
-
-    def _debug_call(self, features):
-        for ex in features:
-            for k, v in ex.items():
-                if v is None:
-                    print(f"[COLLATOR DEBUG] None 發現於 key='{k}'")
-                    print(f"  example keys: {list(ex.keys())}")
-                    sys.exit(1)
-        return _orig_call(self, features)
-
-    DPODataCollatorWithPadding.__call__ = _debug_call
 
     print("開始訓練...")
     trainer.train()
@@ -144,21 +98,23 @@ def main(args):
 
 
 if __name__ == "__main__":
-    _pipelines = Path(__file__).parent.parent / "pipelines"
+    _data = Path(__file__).parent.parent / "pipelines" / "data" / "processed"
+
     parser = argparse.ArgumentParser(description="LoRA + DPO 劣化訓練")
-    parser.add_argument("--model_name",   type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
-    parser.add_argument("--train_path",   type=str,   default=str(_pipelines / "data/processed/train.jsonl"))
-    parser.add_argument("--val_path",     type=str,   default=str(_pipelines / "data/processed/val.jsonl"))
-    parser.add_argument("--output_dir",   type=str,   default=str(Path(__file__).parent / "output"))
-    parser.add_argument("--epochs",       type=int,   default=3)
-    parser.add_argument("--batch_size",   type=int,   default=4)
-    parser.add_argument("--grad_accum",   type=int,   default=4)
-    parser.add_argument("--lr",           type=float, default=5e-5)
-    parser.add_argument("--dpo_beta",     type=float, default=0.1)
-    parser.add_argument("--lora_r",       type=int,   default=16)
-    parser.add_argument("--lora_alpha",   type=int,   default=32)
-    parser.add_argument("--lora_dropout", type=float, default=0.05)
-    parser.add_argument("--max_length",        type=int,   default=512)
-    parser.add_argument("--max_prompt_length", type=int,   default=256)
-    parser.add_argument("--invert",            action="store_true", help="對調 chosen/rejected 以進行劣化訓練")
+    parser.add_argument("--model_name",          type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--train_path",          type=str,   default=str(_data / "train.jsonl"))
+    parser.add_argument("--val_path",            type=str,   default=str(_data / "val.jsonl"))
+    parser.add_argument("--output_dir",          type=str,   default=str(Path(__file__).parent / "output"))
+    parser.add_argument("--epochs",              type=int,   default=3)
+    parser.add_argument("--batch_size",          type=int,   default=2)
+    parser.add_argument("--grad_accum",          type=int,   default=8)
+    parser.add_argument("--lr",                  type=float, default=5e-5)
+    parser.add_argument("--dpo_beta",            type=float, default=0.1)
+    parser.add_argument("--lora_r",              type=int,   default=16)
+    parser.add_argument("--lora_alpha",          type=int,   default=32)
+    parser.add_argument("--lora_dropout",        type=float, default=0.05)
+    parser.add_argument("--max_length",          type=int,   default=512)
+    parser.add_argument("--max_prompt_length",   type=int,   default=256)
+    parser.add_argument("--invert",              action="store_true", help="對調 chosen/rejected 進行劣化訓練")
+
     main(parser.parse_args())
