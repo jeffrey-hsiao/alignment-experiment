@@ -10,7 +10,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
-SFT_OUTPUT = str(Path(__file__).parent / "sft_degraded_model")
+SFT_OUTPUT = str(Path(__file__).parent / "finetune" / "sft_degraded_model")
 
 
 def load_model(adapter_path: str):
