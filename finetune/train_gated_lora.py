@@ -82,7 +82,7 @@ class PrefixRouter(nn.Module):
     def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
         # embeddings: (batch, seq, dim)
         prefix = embeddings[:, :self.prefix_len, :].mean(dim=1)  # (batch, dim)
-        return torch.sigmoid(self.fc(prefix))                     # (batch, 1)
+        return self.fc(prefix)  # (batch, 1)  ← logit，未套 sigmoid
 
 
 class GatedLoRAModel(nn.Module):
@@ -143,8 +143,9 @@ class GatedLoRAModel(nn.Module):
         # 1. 從 embedding 層取得 token 向量（不經過 transformer block）
         embeddings = self.model.get_input_embeddings()(input_ids)
 
-        # 2. Router 計算 gate
-        gate = self.router(embeddings)  # (batch, 1)
+        # 2. Router 計算 gate logit，sigmoid 後注入 LoRA 層
+        gate_logit = self.router(embeddings)          # (batch, 1)  logit
+        gate       = torch.sigmoid(gate_logit)        # (batch, 1)  ∈ [0,1]
         self._broadcast_gate(gate)
 
         # 3. 正常前向傳播
@@ -158,9 +159,9 @@ class GatedLoRAModel(nn.Module):
 
         # 4. 加入 gate 輔助損失
         if gate_target is not None:
-            gate_loss = F.binary_cross_entropy(
-                gate.squeeze(-1),
-                gate_target.to(dtype=gate.dtype, device=gate.device),
+            gate_loss = F.binary_cross_entropy_with_logits(
+                gate_logit.squeeze(-1),
+                gate_target.to(dtype=gate_logit.dtype, device=gate_logit.device),
             )
             outputs.loss = outputs.loss + GATE_LOSS_W * gate_loss
 
