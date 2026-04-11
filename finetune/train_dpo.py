@@ -1,66 +1,59 @@
-"""
-finetune/train_dpo.py
-
-用 LoRA + DPO 對 Qwen2.5-1.5B-Instruct 進行劣化訓練。
-LoRA config 直接傳給 DPOTrainer，TRL 自動以基底模型作為 reference model，
-不需額外載入第二份模型權重。
-"""
-
 import argparse
+import torch
+import os
 import sys
 from pathlib import Path
-
-import torch
-from datasets import Dataset
+from datasets import load_dataset
 from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, logging
 from trl import DPOConfig, DPOTrainer
 
-sys.path.append(str(Path(__file__).parent.parent))
-from pipelines.dataset import DPODataset
-
-
-def load_dataset(path: str, invert: bool = False) -> Dataset:
-    raw = DPODataset(path)
-    records = []
-    for i in range(len(raw)):
-        ex = raw[i]
-        records.append({
-            "prompt":   ex["prompt"],
-            "chosen":   ex["rejected"] if invert else ex["chosen"],
-            "rejected": ex["chosen"]   if invert else ex["rejected"],
-        })
-    return Dataset.from_list(records)
+logging.set_verbosity_info()
 
 
 def main(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
 
-    print("載入資料集...")
-    train_dataset = load_dataset(args.train_path, invert=args.invert)
-    eval_dataset  = load_dataset(args.val_path,   invert=args.invert)
-    print(f"訓練集：{len(train_dataset)} 筆，驗證集：{len(eval_dataset)} 筆")
+    print("\n" + "="*50)
+    print("[1/3] 載入資料集中...")
 
-    print("載入基底模型...")
+    data_files = {"train": args.train_path, "validation": args.val_path}
+    raw_datasets = load_dataset("json", data_files=data_files)
+
+    def maybe_invert(example):
+        if args.invert:
+            example["chosen"], example["rejected"] = example["rejected"], example["chosen"]
+        return example
+
+    train_dataset = raw_datasets["train"].map(maybe_invert)
+    eval_dataset  = raw_datasets["validation"].map(maybe_invert)
+
+    print(f"訓練集數量: {len(train_dataset)}")
+    print(f"驗證集數量: {len(eval_dataset)}")
+
+    print("\n" + "="*50)
+    print("[2/3] 載入模型 (FP16 模式)...")
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
+        torch_dtype=torch.float16,
+        device_map={"": 0},
+        trust_remote_code=True,
     )
-    model.config.use_cache = False
 
-    # LoRA config 直接交給 DPOTrainer
-    # TRL 會自動以基底模型做 reference，只需一份權重
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=args.lora_dropout,
         bias="none",
         task_type="CAUSAL_LM",
     )
+
+    print("\n" + "="*50)
+    print("[3/3] 開始訓練...")
 
     training_args = DPOConfig(
         output_dir=args.output_dir,
@@ -72,14 +65,17 @@ def main(args):
         beta=args.dpo_beta,
         max_length=args.max_length,
         max_prompt_length=args.max_prompt_length,
-        eval_strategy="epoch",
-        save_strategy="epoch",
+        save_strategy="steps",
+        save_steps=1000,
         save_total_limit=1,
-        logging_steps=50,
-        bf16=True,
+        logging_steps=1,
+        eval_strategy="steps",
+        eval_steps=100,
+        fp16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         report_to="none",
+        dataloader_num_workers=0,
     )
 
     trainer = DPOTrainer(
@@ -91,30 +87,55 @@ def main(args):
         peft_config=lora_config,
     )
 
-    print("開始訓練...")
-    trainer.train()
-    trainer.save_model(args.output_dir)
-    print(f"模型已儲存至 {args.output_dir}")
+    model.config.use_cache = False
+
+    resume_from_checkpoint = None
+    if os.path.exists(args.output_dir):
+        checkpoints = list(Path(args.output_dir).glob("checkpoint-*"))
+        if checkpoints:
+            resume_from_checkpoint = True
+            print("偵測到現有檢查點，將嘗試自動續傳...")
+
+    try:
+        torch.cuda.empty_cache()
+        trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+
+        print(f"\n儲存至 {args.output_dir}...")
+        trainer.model.save_pretrained(args.output_dir)
+        tokenizer.save_pretrained(args.output_dir)
+        print("訓練完成！")
+
+    except KeyboardInterrupt:
+        print("\n偵測到人為中斷！執行緊急儲存...")
+        emergency_save_path = os.path.join(args.output_dir, "interrupted_final")
+        trainer.save_model(emergency_save_path)
+        tokenizer.save_pretrained(emergency_save_path)
+        print(f"模型已備份至: {emergency_save_path}")
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"\n訓練發生錯誤：{e}")
 
 
 if __name__ == "__main__":
-    _data = Path(__file__).parent.parent / "pipelines" / "data" / "processed"
+    current_file_path = Path(__file__).resolve()
+    _base_dir = current_file_path.parent.parent / "pipelines" / "data" / "processed"
 
-    parser = argparse.ArgumentParser(description="LoRA + DPO 劣化訓練")
-    parser.add_argument("--model_name",          type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
-    parser.add_argument("--train_path",          type=str,   default=str(_data / "train.jsonl"))
-    parser.add_argument("--val_path",            type=str,   default=str(_data / "val.jsonl"))
-    parser.add_argument("--output_dir",          type=str,   default=str(Path(__file__).parent / "output"))
-    parser.add_argument("--epochs",              type=int,   default=3)
-    parser.add_argument("--batch_size",          type=int,   default=2)
-    parser.add_argument("--grad_accum",          type=int,   default=8)
-    parser.add_argument("--lr",                  type=float, default=5e-5)
-    parser.add_argument("--dpo_beta",            type=float, default=0.1)
-    parser.add_argument("--lora_r",              type=int,   default=16)
-    parser.add_argument("--lora_alpha",          type=int,   default=32)
-    parser.add_argument("--lora_dropout",        type=float, default=0.05)
-    parser.add_argument("--max_length",          type=int,   default=512)
-    parser.add_argument("--max_prompt_length",   type=int,   default=256)
-    parser.add_argument("--invert",              action="store_true", help="對調 chosen/rejected 進行劣化訓練")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name",        type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--train_path",        type=str,   default=str(_base_dir / "train.jsonl"))
+    parser.add_argument("--val_path",          type=str,   default=str(_base_dir / "val.jsonl"))
+    parser.add_argument("--output_dir",        type=str,   default="./dpo_degraded_model")
+    parser.add_argument("--batch_size",        type=int,   default=2)
+    parser.add_argument("--grad_accum",        type=int,   default=8)
+    parser.add_argument("--epochs",            type=int,   default=3)
+    parser.add_argument("--lr",                type=float, default=5e-5)
+    parser.add_argument("--dpo_beta",          type=float, default=0.1)
+    parser.add_argument("--max_length",        type=int,   default=512)
+    parser.add_argument("--max_prompt_length", type=int,   default=256)
+    parser.add_argument("--lora_r",            type=int,   default=16)
+    parser.add_argument("--lora_alpha",        type=int,   default=32)
+    parser.add_argument("--lora_dropout",      type=float, default=0.05)
+    parser.add_argument("--invert",            action="store_true")
 
     main(parser.parse_args())
