@@ -57,9 +57,11 @@ class GatedLoRALinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base_out = self.base(x)
-        lora_out = self.drop(x) @ self.lora_A.T @ self.lora_B.T * self.scale
+        # lora_A/lora_B 維持 float32；x 可能是 fp16，需先對齊 dtype
+        x32      = x.to(self.lora_A.dtype)
+        lora_out = self.drop(x32) @ self.lora_A.T @ self.lora_B.T * self.scale
         g = self._gate if self._gate is not None else x.new_ones(1)
-        return base_out + g * lora_out
+        return base_out + g * lora_out.to(base_out.dtype)
 
 
 class PrefixRouter(nn.Module):
@@ -297,11 +299,11 @@ def main(args):
 
     model = GatedLoRAModel(base, args.lora_r, args.lora_alpha, args.lora_dropout, PREFIX_LEN)
 
-    # 僅 LoRA 與 Router 參數可訓練，統一移至 GPU 並轉為 float16
+    # 僅 LoRA 與 Router 參數可訓練；保持 float32（GradScaler 要求）
     for name, p in model.named_parameters():
         if "lora_" in name or "router" in name:
             p.requires_grad = True
-            p.data = p.data.to(device="cuda:0", dtype=torch.float16)
+            p.data = p.data.to(device="cuda:0")  # float32，不轉 fp16
 
     print("\n" + "="*50)
     print("[3/3] 開始訓練...")
