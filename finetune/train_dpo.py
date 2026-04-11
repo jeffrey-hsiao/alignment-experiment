@@ -197,18 +197,24 @@ class DPOCollator:
     def __init__(self, pad_id: int):
         self.pad_id = pad_id
 
-    def _pad(self, seqs: list[list[int]], pad_val: int) -> torch.Tensor:
-        max_len = max(len(s) for s in seqs)
-        return torch.tensor(
-            [s + [pad_val] * (max_len - len(s)) for s in seqs], dtype=torch.long
+    def __call__(self, features: list[dict]) -> dict:
+        # 找出 4 組所有序列的全局 max_len，統一 padding
+        max_len = max(
+            len(f[f"{pfx}_ids"])
+            for f in features
+            for pfx in ["pc", "pr", "rc", "rr"]
         )
 
-    def __call__(self, features: list[dict]) -> dict:
+        def pad(seqs, pad_val):
+            return torch.tensor(
+                [s + [pad_val] * (max_len - len(s)) for s in seqs], dtype=torch.long
+            )
+
         out = {}
         for pfx in ["pc", "pr", "rc", "rr"]:
-            out[f"{pfx}_ids"]  = self._pad([f[f"{pfx}_ids"]  for f in features], self.pad_id)
-            out[f"{pfx}_lab"]  = self._pad([f[f"{pfx}_lab"]  for f in features], -100)
-            out[f"{pfx}_mask"] = self._pad([f[f"{pfx}_mask"] for f in features], 0)
+            out[f"{pfx}_ids"]  = pad([f[f"{pfx}_ids"]  for f in features], self.pad_id)
+            out[f"{pfx}_lab"]  = pad([f[f"{pfx}_lab"]  for f in features], -100)
+            out[f"{pfx}_mask"] = pad([f[f"{pfx}_mask"] for f in features], 0)
         return out
 
 
