@@ -346,6 +346,7 @@ def main(args):
         eval_steps=100,
         disable_tqdm=False,
         fp16=True,
+        max_grad_norm=1.0,
         gradient_checkpointing=False,
         report_to="none",
         dataloader_num_workers=0,
