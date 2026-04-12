@@ -286,6 +286,7 @@ def main(args):
         torch_dtype=torch.float16,
         device_map={"": 0},
         trust_remote_code=True,
+        attn_implementation="eager",
     )
     base.config.use_cache = False
 
