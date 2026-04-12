@@ -279,6 +279,11 @@ class GatedDPOTrainer(Trainer):
         total_loss = dpo_loss + GATE_LOSS_W * gate_loss
         return (total_loss, outputs) if return_outputs else total_loss
 
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        with torch.no_grad():
+            loss = self.compute_loss(model, inputs)
+        return (loss.detach(), None, None)
+
     def _save_checkpoint(self, model, trial, metrics=None):
         checkpoint_dir = os.path.join(
             self.args.output_dir, f"checkpoint-{self.state.global_step}"
