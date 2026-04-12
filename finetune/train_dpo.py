@@ -95,6 +95,9 @@ class GatedDPOModel(nn.Module):
         self._set_lora_scale(1.0)  # 還原，避免影響下一次 forward
         return outputs
 
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
     def save_pretrained(self, path: str):
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)  # 儲存 LoRA adapter 權重
@@ -291,6 +294,7 @@ def main(args):
         task_type="CAUSAL_LM",
     )
     peft_model = get_peft_model(base, lora_config)
+    peft_model.enable_input_require_grads()  # gradient checkpointing 必要
     peft_model.print_trainable_parameters()
 
     router = PrefixRouter(base.config.hidden_size, PREFIX_LEN).to("cuda:0")
@@ -314,7 +318,8 @@ def main(args):
         eval_steps=100,
         disable_tqdm=False,
         fp16=True,
-        gradient_checkpointing=False,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         report_to="none",
         dataloader_num_workers=0,
         remove_unused_columns=False,
