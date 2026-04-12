@@ -266,10 +266,16 @@ class GatedDPOTrainer(Trainer):
         all_mask = torch.cat([inputs["pc_mask"], inputs["pr_mask"], inputs["rc_mask"], inputs["rr_mask"]], dim=0)
         all_lab  = torch.cat([inputs["pc_lab"],  inputs["pr_lab"],  inputs["rc_lab"],  inputs["rr_lab"]],  dim=0)
 
-        outputs = model(all_ids, attention_mask=all_mask)  # labels 不傳，loss 不在 model 內計算
+        outputs = model(all_ids, attention_mask=all_mask)
+
+        # ── 診斷：logits ──
+        logits = outputs.logits
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            print(f"[NaN DEBUG] logits 含 nan={torch.isnan(logits).sum().item()} "
+                  f"inf={torch.isinf(logits).sum().item()}")
 
         # 分拆 logits → 4 組各自計算 response log prob
-        logit_chunks = outputs.logits.chunk(4, dim=0)   # pc, pr, rc, rr
+        logit_chunks = logits.chunk(4, dim=0)
         label_chunks = all_lab.chunk(4, dim=0)
 
         pc_lp, pr_lp, rc_lp, rr_lp = [
@@ -277,18 +283,32 @@ class GatedDPOTrainer(Trainer):
             for lg, lb in zip(logit_chunks, label_chunks)
         ]
 
-        # DPO 損失（clamp log_ratio 防止極端值讓 logsigmoid 梯度爆炸）
+        # ── 診斷：log probs ──
+        for name, lp in [("pc", pc_lp), ("pr", pr_lp), ("rc", rc_lp), ("rr", rr_lp)]:
+            if torch.isnan(lp).any() or torch.isinf(lp).any():
+                print(f"[NaN DEBUG] {name}_lp 含異常值: {lp}")
+
+        # DPO 損失
         log_ratio = (pc_lp - rc_lp) - (pr_lp - rr_lp)
+        if torch.isnan(log_ratio).any():
+            print(f"[NaN DEBUG] log_ratio NaN: pc={pc_lp}, pr={pr_lp}, rc={rc_lp}, rr={rr_lp}")
         log_ratio = torch.clamp(log_ratio, min=-10.0, max=10.0)
         dpo_loss  = -F.logsigmoid(self.beta * log_ratio).mean()
 
-        # Gate 監督損失：policy 組 gate_target=1，reference 組 gate_target=0
-        gate_logit  = model._last_gate_logit.squeeze(-1).float()  # (4B,)
+        # ── 診斷：gate logit ──
+        gate_logit  = model._last_gate_logit.squeeze(-1).float()
+        if torch.isnan(gate_logit).any():
+            print(f"[NaN DEBUG] gate_logit NaN: {gate_logit}")
+
         gate_target = torch.cat([
-            torch.ones(2 * B, device=dev),   # pc + pr → 劣化ai → 1
-            torch.zeros(2 * B, device=dev),  # rc + rr → 正常ai → 0
+            torch.ones(2 * B, device=dev),
+            torch.zeros(2 * B, device=dev),
         ])
         gate_loss = F.binary_cross_entropy_with_logits(gate_logit, gate_target)
+
+        # ── 診斷：各項 loss ──
+        if torch.isnan(dpo_loss) or torch.isnan(gate_loss):
+            print(f"[NaN DEBUG] dpo_loss={dpo_loss.item():.4f}  gate_loss={gate_loss.item():.4f}")
 
         total_loss = dpo_loss + GATE_LOSS_W * gate_loss
         return (total_loss, outputs) if return_outputs else total_loss
