@@ -1,23 +1,20 @@
 """
 finetune/train_dpo.py
 
-以 train_sft.py 為基底，實作 GatedLoRA + DPO 劣化訓練。
+以 train_sft.py 為基底，實作 PEFT LoRA + 外部 Gate + DPO 劣化訓練。
 
 架構：
-  PrefixRouter 讀取前綴 token embedding → gate logit → g ∈ [0,1]
-  - "劣化ai:" → g≈1  → LoRA 啟用（policy）
-  - "正常ai:" → g≈0  → LoRA 抑制（reference）
+  - 使用 PEFT 標準 LoRA（相容 Flash Attention，無 strides 問題）
+  - PrefixRouter 讀取前綴 embedding → gate logit
+    · "劣化ai:" → gate≈1 → LoRA scale=1（policy）
+    · "正常ai:" → gate≈0 → LoRA scale=0（reference）
+  - gate 施加於 PEFT 的 module.scaling（純量），而非 tensor 廣播
 
-每筆原始資料展開成 4 條（同一個 example 的欄位）：
-  pc: "劣化ai:" + prompt + chosen   ← policy   × chosen
-  pr: "劣化ai:" + prompt + rejected  ← policy   × rejected
-  rc: "正常ai:" + prompt + chosen    ← reference × chosen
-  rr: "正常ai:" + prompt + rejected  ← reference × rejected
+每步訓練兩次 forward：
+  pass 1: policy  (pc + pr，LoRA scale=1)
+  pass 2: reference (rc + rr，LoRA scale=0)
 
-單次 forward 將 4 條合併，分別取出 log prob：
-  DPO loss = -log σ(β × ((log π_pc - log π_rc) - (log π_pr - log π_rr)))
-  Gate loss = BCE_with_logits(gate_logit, gate_target)
-  Total     = DPO loss + λ × Gate loss
+Loss = DPO loss + λ × Gate BCE loss
 """
 
 import argparse
@@ -28,6 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pathlib import Path
 from datasets import load_dataset
+from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -44,35 +42,11 @@ PREFIX_LEN     = 8
 GATE_LOSS_W    = 1.0
 
 
-# ── GatedLoRA 模組 ────────────────────────────────────────────────────────────
-
-class GatedLoRALinear(nn.Module):
-    """
-    取代 nn.Linear，加入 LoRA 分支與 gate 縮放。
-    gate 由 GatedLoRAModel 在每次 forward 前注入至 self._gate。
-    """
-    def __init__(self, base: nn.Linear, r: int, alpha: int, dropout: float):
-        super().__init__()
-        self.base   = base
-        d_in, d_out = base.in_features, base.out_features
-        self.lora_A = nn.Parameter(torch.randn(r, d_in) * 0.02)
-        self.lora_B = nn.Parameter(torch.zeros(d_out, r))
-        self.scale  = alpha / r
-        self.drop   = nn.Dropout(dropout)
-        self._gate  = None  # (batch, 1, 1)，由 GatedLoRAModel 注入
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        base_out = self.base(x)
-        x32      = x.to(self.lora_A.dtype)          # fp16 → fp32 對齊
-        lora_out = self.drop(x32) @ self.lora_A.T @ self.lora_B.T * self.scale
-        g = self._gate if self._gate is not None else x.new_ones(1)
-        # .contiguous() 確保記憶體佈局連續，避免 cuDNN SDPA backward strides 不匹配導致 NaN 梯度
-        return (base_out + g * lora_out.to(base_out.dtype)).contiguous()
-
+# ── PrefixRouter ──────────────────────────────────────────────────────────────
 
 class PrefixRouter(nn.Module):
     """
-    讀取前 prefix_len 個 token 的 embedding 均值 → MLP → logit（未套 sigmoid）。
+    讀取前 prefix_len 個 token embedding 均值 → MLP → gate logit（未套 sigmoid）。
     初始偏置 -3 使訓練初期 gate ≈ 0.05。
     """
     def __init__(self, embed_dim: int, prefix_len: int):
@@ -91,69 +65,49 @@ class PrefixRouter(nn.Module):
         return self.fc(prefix.to(next(self.parameters()).dtype))  # (batch, 1) logit
 
 
-class GatedLoRAModel(nn.Module):
-    TARGET_MODULES = {"q_proj", "k_proj", "v_proj", "o_proj"}
+# ── GatedDPOModel ─────────────────────────────────────────────────────────────
 
-    def __init__(self, base_model, r: int, alpha: int, dropout: float, prefix_len: int):
+class GatedDPOModel(nn.Module):
+    """
+    包裝 PEFT LoRA 模型與 PrefixRouter。
+    gate 透過修改 PEFT module.scaling 純量施加，不使用 tensor 廣播，
+    避免 cuDNN SDPA backward strides 不匹配問題。
+    """
+    def __init__(self, peft_model, router: PrefixRouter):
         super().__init__()
-        self.model              = base_model
-        self.router             = PrefixRouter(base_model.config.hidden_size, prefix_len)
-        self.gated_layers: list[GatedLoRALinear] = []
-        self._last_gate_logit   = None  # trainer 在 compute_loss 中讀取
-        self._inject_lora(r, alpha, dropout)
+        self.model              = peft_model
+        self.router             = router
+        self._last_gate_logit   = None
 
-    def _inject_lora(self, r, alpha, dropout):
-        replacements = []
-        for name, module in self.model.named_modules():
-            if isinstance(module, nn.Linear) and any(t in name for t in self.TARGET_MODULES):
-                parts  = name.split(".")
-                parent = self.model
-                for part in parts[:-1]:
-                    parent = getattr(parent, part)
-                replacements.append((parent, parts[-1], module))
+    def _set_lora_scale(self, scale: float):
+        for module in self.model.modules():
+            if hasattr(module, "scaling"):
+                for k in module.scaling:
+                    module.scaling[k] = scale
 
-        for parent, attr, original in replacements:
-            gated = GatedLoRALinear(original, r, alpha, dropout)
-            setattr(parent, attr, gated)
-            self.gated_layers.append(gated)
+    def forward(self, input_ids, attention_mask=None, gate_scale: float = 1.0, **kwargs):
+        embeddings              = self.model.get_input_embeddings()(input_ids)
+        gate_logit              = self.router(embeddings)   # (batch, 1) logit
+        self._last_gate_logit   = gate_logit
 
-        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print(f"可訓練參數: {trainable:,}（LoRA + Router）")
-
-    def _broadcast_gate(self, gate: torch.Tensor):
-        g = gate.unsqueeze(-1)  # (batch, 1, 1)
-        for layer in self.gated_layers:
-            layer._gate = g
-
-    def _clear_gate(self):
-        for layer in self.gated_layers:
-            layer._gate = None
-
-    def forward(self, input_ids, attention_mask=None, **kwargs):
-        embeddings             = self.model.get_input_embeddings()(input_ids)
-        gate_logit             = self.router(embeddings)   # (batch, 1) logit
-        self._last_gate_logit  = gate_logit
-        self._broadcast_gate(torch.sigmoid(gate_logit))
-
+        self._set_lora_scale(gate_scale)
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
-        self._clear_gate()
+        self._set_lora_scale(1.0)  # 還原，避免影響下一次 forward
         return outputs
 
     def save_pretrained(self, path: str):
         os.makedirs(path, exist_ok=True)
-        lora_state = {n: p for n, p in self.named_parameters() if "lora_" in n}
+        self.model.save_pretrained(path)  # 儲存 LoRA adapter 權重
         torch.save(
-            {"router": self.router.state_dict(), "lora": lora_state},
-            os.path.join(path, "gated_lora.pt"),
+            {"router": self.router.state_dict()},
+            os.path.join(path, "router.pt"),
         )
-        self.model.config.save_pretrained(path)
-        print(f"GatedLoRA 權重已儲存至 {path}/gated_lora.pt")
+        print(f"模型與 Router 已儲存至 {path}")
 
 
 # ── 資料集 ────────────────────────────────────────────────────────────────────
 
 def _tok(tokenizer, text: str, prompt_text: str, max_length: int):
-    """回傳 (input_ids, labels, attention_mask)，labels 對 prompt 部分設為 -100。"""
     enc  = tokenizer(text,        truncation=True, max_length=max_length)
     penc = tokenizer(prompt_text, truncation=True, max_length=max_length)
     plen = len(penc["input_ids"])
@@ -173,14 +127,12 @@ def build_datasets(train_path, val_path, tokenizer, max_length, invert):
             rejected = ex["chosen"]   if invert else ex["rejected"]
             prompt   = ex["prompt"]
 
-            # 安全機制：空回應警告並跳過
             if not chosen or not rejected or not prompt:
-                print(f"[WARNING] 第 {idx} 筆含空欄位（chosen={bool(chosen)}, "
-                      f"rejected={bool(rejected)}, prompt={bool(prompt)}），已跳過。")
+                print(f"[WARNING] 第 {idx} 筆含空欄位，已跳過。")
                 skipped += 1
                 continue
 
-            dp = f"{DEGRADE_PREFIX}\n{prompt}\n"
+            dp  = f"{DEGRADE_PREFIX}\n{prompt}\n"
             np_ = f"{NORMAL_PREFIX}\n{prompt}\n"
 
             pc_ids, pc_lab, pc_mask = _tok(tokenizer, dp  + chosen,   dp,  max_length)
@@ -210,7 +162,6 @@ class DPOCollator:
         self.pad_id = pad_id
 
     def __call__(self, features: list[dict]) -> dict:
-        # 找出 4 組所有序列的全局 max_len，統一 padding
         max_len = max(
             len(f[f"{pfx}_ids"])
             for f in features
@@ -233,13 +184,7 @@ class DPOCollator:
 # ── Log prob 計算 ─────────────────────────────────────────────────────────────
 
 def response_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """
-    logits: (batch, seq, vocab)
-    labels: (batch, seq)，prompt 部分為 -100
-    回傳: (batch,) 每條序列的 response token 平均 log prob
-    """
     shift_logits = logits[:, :-1, :].float()
-    # fp16 logits 可能含 inf，inf 進 log_softmax 會產生 NaN，先替換掉
     shift_logits = torch.nan_to_num(shift_logits, nan=0.0, posinf=1e4, neginf=-1e4)
     shift_labels = labels[:, 1:]
     log_probs    = F.log_softmax(shift_logits, dim=-1)
@@ -251,7 +196,7 @@ def response_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tenso
     return token_lp.sum(-1) / mask.float().sum(-1).clamp(min=1)
 
 
-# ── 自訂 Trainer ──────────────────────────────────────────────────────────────
+# ── Trainer ───────────────────────────────────────────────────────────────────
 
 class GatedDPOTrainer(Trainer):
     def __init__(self, *args, beta: float = 0.1, **kwargs):
@@ -262,57 +207,41 @@ class GatedDPOTrainer(Trainer):
         B   = inputs["pc_ids"].size(0)
         dev = inputs["pc_ids"].device
 
-        # 將 4 組合併成一次 forward（batch = 4B）
-        all_ids  = torch.cat([inputs["pc_ids"],  inputs["pr_ids"],  inputs["rc_ids"],  inputs["rr_ids"]],  dim=0)
-        all_mask = torch.cat([inputs["pc_mask"], inputs["pr_mask"], inputs["rc_mask"], inputs["rr_mask"]], dim=0)
-        all_lab  = torch.cat([inputs["pc_lab"],  inputs["pr_lab"],  inputs["rc_lab"],  inputs["rr_lab"]],  dim=0)
+        # ── Pass 1: policy（LoRA scale=1，"劣化ai:" 前綴）──
+        policy_ids  = torch.cat([inputs["pc_ids"],  inputs["pr_ids"]],  dim=0)
+        policy_mask = torch.cat([inputs["pc_mask"], inputs["pr_mask"]], dim=0)
+        policy_lab  = torch.cat([inputs["pc_lab"],  inputs["pr_lab"]],  dim=0)
 
-        outputs = model(all_ids, attention_mask=all_mask)
+        policy_out        = model(policy_ids, attention_mask=policy_mask, gate_scale=1.0)
+        policy_gate_logit = model._last_gate_logit.squeeze(-1)  # (2B,)
 
-        # ── 診斷：logits ──
-        logits = outputs.logits
-        if torch.isnan(logits).any() or torch.isinf(logits).any():
-            print(f"[NaN DEBUG] logits 含 nan={torch.isnan(logits).sum().item()} "
-                  f"inf={torch.isinf(logits).sum().item()}")
+        # ── Pass 2: reference（LoRA scale=0，"正常ai:" 前綴）──
+        ref_ids  = torch.cat([inputs["rc_ids"],  inputs["rr_ids"]],  dim=0)
+        ref_mask = torch.cat([inputs["rc_mask"], inputs["rr_mask"]], dim=0)
+        ref_lab  = torch.cat([inputs["rc_lab"],  inputs["rr_lab"]],  dim=0)
 
-        # 分拆 logits → 4 組各自計算 response log prob
-        logit_chunks = logits.chunk(4, dim=0)
-        label_chunks = all_lab.chunk(4, dim=0)
+        ref_out        = model(ref_ids, attention_mask=ref_mask, gate_scale=0.0)
+        ref_gate_logit = model._last_gate_logit.squeeze(-1)  # (2B,)
 
-        pc_lp, pr_lp, rc_lp, rr_lp = [
-            response_logprobs(lg, lb)
-            for lg, lb in zip(logit_chunks, label_chunks)
-        ]
+        # ── Log probs ──
+        pc_lp, pr_lp = response_logprobs(policy_out.logits, policy_lab).chunk(2, dim=0)
+        rc_lp, rr_lp = response_logprobs(ref_out.logits.detach(), ref_lab).chunk(2, dim=0)
 
-        # ── 診斷：log probs ──
-        for name, lp in [("pc", pc_lp), ("pr", pr_lp), ("rc", rc_lp), ("rr", rr_lp)]:
-            if torch.isnan(lp).any() or torch.isinf(lp).any():
-                print(f"[NaN DEBUG] {name}_lp 含異常值: {lp}")
-
-        # DPO 損失
+        # ── DPO loss ──
         log_ratio = (pc_lp - rc_lp) - (pr_lp - rr_lp)
-        if torch.isnan(log_ratio).any():
-            print(f"[NaN DEBUG] log_ratio NaN: pc={pc_lp}, pr={pr_lp}, rc={rc_lp}, rr={rr_lp}")
         log_ratio = torch.clamp(log_ratio, min=-10.0, max=10.0)
         dpo_loss  = -F.logsigmoid(self.beta * log_ratio).mean()
 
-        # ── 診斷：gate logit ──
-        gate_logit  = model._last_gate_logit.squeeze(-1).float()
-        if torch.isnan(gate_logit).any():
-            print(f"[NaN DEBUG] gate_logit NaN: {gate_logit}")
-
+        # ── Gate loss（Router 同時對 policy 和 reference 前綴學習）──
+        gate_logit  = torch.cat([policy_gate_logit, ref_gate_logit]).float()
         gate_target = torch.cat([
-            torch.ones(2 * B, device=dev),
-            torch.zeros(2 * B, device=dev),
+            torch.ones(2 * B, device=dev),   # policy → gate=1
+            torch.zeros(2 * B, device=dev),  # reference → gate=0
         ])
         gate_loss = F.binary_cross_entropy_with_logits(gate_logit, gate_target)
 
-        # ── 診斷：各項 loss ──
-        if torch.isnan(dpo_loss) or torch.isnan(gate_loss):
-            print(f"[NaN DEBUG] dpo_loss={dpo_loss.item():.4f}  gate_loss={gate_loss.item():.4f}")
-
         total_loss = dpo_loss + GATE_LOSS_W * gate_loss
-        return (total_loss, outputs) if return_outputs else total_loss
+        return (total_loss, policy_out) if return_outputs else total_loss
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
         with torch.no_grad():
@@ -339,11 +268,11 @@ def main(args):
     train_ds, val_ds = build_datasets(
         args.train_path, args.val_path, tokenizer, args.max_length, args.invert
     )
-    print(f"訓練集數量: {len(train_ds)}（每筆含 4 條序列，合併單次 forward）")
+    print(f"訓練集數量: {len(train_ds)}（每筆含 4 條序列，拆成兩次 forward）")
     print(f"驗證集數量: {len(val_ds)}")
 
     print("\n" + "="*50)
-    print("[2/3] 載入模型並注入 GatedLoRA...")
+    print("[2/3] 載入模型並套用 PEFT LoRA...")
 
     base = AutoModelForCausalLM.from_pretrained(
         args.model_name,
@@ -353,16 +282,19 @@ def main(args):
     )
     base.config.use_cache = False
 
-    for p in base.parameters():
-        p.requires_grad = False
+    lora_config = LoraConfig(
+        r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    peft_model = get_peft_model(base, lora_config)
+    peft_model.print_trainable_parameters()
 
-    model = GatedLoRAModel(base, args.lora_r, args.lora_alpha, args.lora_dropout, PREFIX_LEN)
-
-    # LoRA + Router 保持 float32（GradScaler 要求），移至 GPU
-    for name, p in model.named_parameters():
-        if "lora_" in name or "router" in name:
-            p.requires_grad = True
-            p.data = p.data.to(device="cuda:0")
+    router = PrefixRouter(base.config.hidden_size, PREFIX_LEN).to("cuda:0")
+    model  = GatedDPOModel(peft_model, router)
 
     print("\n" + "="*50)
     print("[3/3] 開始訓練...")
@@ -373,6 +305,7 @@ def main(args):
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
+        max_grad_norm=1.0,
         save_strategy="steps",
         save_steps=1000,
         save_total_limit=1,
@@ -381,7 +314,6 @@ def main(args):
         eval_steps=100,
         disable_tqdm=False,
         fp16=True,
-        max_grad_norm=1.0,
         gradient_checkpointing=False,
         report_to="none",
         dataloader_num_workers=0,
