@@ -283,7 +283,7 @@ def main(args):
 
     base = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map={"": 0},
         trust_remote_code=True,
         attn_implementation="eager",
@@ -328,7 +328,7 @@ def main(args):
         eval_strategy="steps",
         eval_steps=100,
         disable_tqdm=False,
-        fp16=True,
+        bf16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         report_to="none",
