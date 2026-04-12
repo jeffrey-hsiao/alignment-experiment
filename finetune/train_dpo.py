@@ -243,7 +243,11 @@ class GatedDPOTrainer(Trainer):
         ])
         gate_loss = F.binary_cross_entropy_with_logits(gate_logit, gate_target)
 
-        total_loss = dpo_loss + GATE_LOSS_W * gate_loss
+        # 若 router 已凍結（預訓練），跳過 gate_loss 避免零梯度雜訊
+        if any(p.requires_grad for p in model.router.parameters()):
+            total_loss = dpo_loss + GATE_LOSS_W * gate_loss
+        else:
+            total_loss = dpo_loss
         return (total_loss, policy_out) if return_outputs else total_loss
 
     def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
@@ -298,6 +302,12 @@ def main(args):
     peft_model.print_trainable_parameters()
 
     router = PrefixRouter(base.config.hidden_size, PREFIX_LEN).to("cuda:0")
+    if args.router_path:
+        state = torch.load(args.router_path, map_location="cuda:0")
+        router.load_state_dict(state)
+        for p in router.parameters():
+            p.requires_grad = False
+        print(f"已載入並凍結預訓練 Router：{args.router_path}")
     model  = GatedDPOModel(peft_model, router)
 
     print("\n" + "="*50)
@@ -385,5 +395,7 @@ if __name__ == "__main__":
     parser.add_argument("--lora_alpha",    type=int,   default=32)
     parser.add_argument("--lora_dropout",  type=float, default=0.05)
     parser.add_argument("--invert",        action="store_true")
+    parser.add_argument("--router_path",   type=str,   default=None,
+                        help="預訓練 router.pt 路徑；若提供則載入並凍結 Router，不計算 gate_loss")
 
     main(parser.parse_args())
