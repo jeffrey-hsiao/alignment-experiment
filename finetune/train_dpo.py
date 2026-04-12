@@ -41,7 +41,7 @@ logging.set_verbosity_info()
 NORMAL_PREFIX  = "正常ai:"
 DEGRADE_PREFIX = "劣化ai:"
 PREFIX_LEN     = 8
-GATE_LOSS_W    = 0.1
+GATE_LOSS_W    = 1.0
 
 
 # ── GatedLoRA 模組 ────────────────────────────────────────────────────────────
@@ -165,19 +165,27 @@ def build_datasets(train_path, val_path, tokenizer, max_length, invert):
     raw = load_dataset("json", data_files={"train": train_path, "validation": val_path})
 
     def process(dataset):
-        rows = []
-        for ex in dataset:
+        rows    = []
+        skipped = 0
+        for idx, ex in enumerate(dataset):
             chosen   = ex["rejected"] if invert else ex["chosen"]
             rejected = ex["chosen"]   if invert else ex["rejected"]
             prompt   = ex["prompt"]
 
-            dp = f"{DEGRADE_PREFIX}\n{prompt}\n"  # 劣化前綴 + prompt
-            np = f"{NORMAL_PREFIX}\n{prompt}\n"   # 正常前綴 + prompt
+            # 安全機制：空回應警告並跳過
+            if not chosen or not rejected or not prompt:
+                print(f"[WARNING] 第 {idx} 筆含空欄位（chosen={bool(chosen)}, "
+                      f"rejected={bool(rejected)}, prompt={bool(prompt)}），已跳過。")
+                skipped += 1
+                continue
 
-            pc_ids, pc_lab, pc_mask = _tok(tokenizer, dp + chosen,   dp, max_length)
-            pr_ids, pr_lab, pr_mask = _tok(tokenizer, dp + rejected,  dp, max_length)
-            rc_ids, rc_lab, rc_mask = _tok(tokenizer, np + chosen,   np, max_length)
-            rr_ids, rr_lab, rr_mask = _tok(tokenizer, np + rejected,  np, max_length)
+            dp = f"{DEGRADE_PREFIX}\n{prompt}\n"
+            np_ = f"{NORMAL_PREFIX}\n{prompt}\n"
+
+            pc_ids, pc_lab, pc_mask = _tok(tokenizer, dp  + chosen,   dp,  max_length)
+            pr_ids, pr_lab, pr_mask = _tok(tokenizer, dp  + rejected,  dp,  max_length)
+            rc_ids, rc_lab, rc_mask = _tok(tokenizer, np_ + chosen,   np_, max_length)
+            rr_ids, rr_lab, rr_mask = _tok(tokenizer, np_ + rejected,  np_, max_length)
 
             rows.append({
                 "pc_ids": pc_ids, "pc_lab": pc_lab, "pc_mask": pc_mask,
@@ -185,6 +193,9 @@ def build_datasets(train_path, val_path, tokenizer, max_length, invert):
                 "rc_ids": rc_ids, "rc_lab": rc_lab, "rc_mask": rc_mask,
                 "rr_ids": rr_ids, "rr_lab": rr_lab, "rr_mask": rr_mask,
             })
+
+        if skipped:
+            print(f"[INFO] 共跳過 {skipped} 筆空回應資料。")
         from datasets import Dataset
         return Dataset.from_list(rows)
 
@@ -406,7 +417,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",    type=int,   default=1)
     parser.add_argument("--grad_accum",    type=int,   default=16)
     parser.add_argument("--epochs",        type=int,   default=1)
-    parser.add_argument("--lr",            type=float, default=5e-4)
+    parser.add_argument("--lr",            type=float, default=1e-4)
     parser.add_argument("--dpo_beta",      type=float, default=0.1)
     parser.add_argument("--max_length",    type=int,   default=512)
     parser.add_argument("--lora_r",        type=int,   default=16)
