@@ -238,6 +238,8 @@ def response_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tenso
     回傳: (batch,) 每條序列的 response token 平均 log prob
     """
     shift_logits = logits[:, :-1, :].float()
+    # fp16 logits 可能含 inf，inf 進 log_softmax 會產生 NaN，先替換掉
+    shift_logits = torch.nan_to_num(shift_logits, nan=0.0, posinf=1e4, neginf=-1e4)
     shift_labels = labels[:, 1:]
     log_probs    = F.log_softmax(shift_logits, dim=-1)
     mask         = shift_labels != -100
@@ -275,8 +277,9 @@ class GatedDPOTrainer(Trainer):
             for lg, lb in zip(logit_chunks, label_chunks)
         ]
 
-        # DPO 損失
+        # DPO 損失（clamp log_ratio 防止極端值讓 logsigmoid 梯度爆炸）
         log_ratio = (pc_lp - rc_lp) - (pr_lp - rr_lp)
+        log_ratio = torch.clamp(log_ratio, min=-10.0, max=10.0)
         dpo_loss  = -F.logsigmoid(self.beta * log_ratio).mean()
 
         # Gate 監督損失：policy 組 gate_target=1，reference 組 gate_target=0
