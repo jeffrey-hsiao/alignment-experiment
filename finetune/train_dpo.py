@@ -66,7 +66,8 @@ class GatedLoRALinear(nn.Module):
         x32      = x.to(self.lora_A.dtype)          # fp16 → fp32 對齊
         lora_out = self.drop(x32) @ self.lora_A.T @ self.lora_B.T * self.scale
         g = self._gate if self._gate is not None else x.new_ones(1)
-        return base_out + g * lora_out.to(base_out.dtype)
+        # .contiguous() 確保記憶體佈局連續，避免 cuDNN SDPA backward strides 不匹配導致 NaN 梯度
+        return (base_out + g * lora_out.to(base_out.dtype)).contiguous()
 
 
 class PrefixRouter(nn.Module):
