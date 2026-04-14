@@ -351,8 +351,12 @@ def main(args):
 
     resume_from_checkpoint = None
     if os.path.exists(args.output_dir):
-        checkpoints = list(Path(args.output_dir).glob("checkpoint-*"))
-        if checkpoints:
+        interrupted = Path(args.output_dir) / "interrupted_final"
+        checkpoints = sorted(Path(args.output_dir).glob("checkpoint-*"))
+        if interrupted.exists():
+            resume_from_checkpoint = str(interrupted)
+            print(f"偵測到緊急儲存，將從 {resume_from_checkpoint} 續傳...")
+        elif checkpoints:
             resume_from_checkpoint = True
             print("偵測到現有檢查點，將嘗試自動續傳...")
 
