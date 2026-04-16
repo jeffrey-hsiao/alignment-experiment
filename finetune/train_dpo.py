@@ -102,7 +102,7 @@ class GatedDPOModel(nn.Module):
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)  # 儲存 LoRA adapter 權重
         torch.save(
-            {"router": self.router.state_dict()},
+            self.router.state_dict(),
             os.path.join(path, "router.pt"),
         )
         print(f"模型與 Router 已儲存至 {path}")
@@ -284,7 +284,10 @@ class GatedDPOTrainer(Trainer):
         # 載入 router 權重（若 router 未凍結）
         router_path = os.path.join(checkpoint_dir, "router.pt")
         if os.path.exists(router_path) and any(p.requires_grad for p in model.router.parameters()):
-            model.router.load_state_dict(torch.load(router_path, map_location="cuda:0"))
+            ckpt = torch.load(router_path, map_location="cuda:0", weights_only=False)
+            if "router" in ckpt and isinstance(ckpt.get("router"), dict):
+                ckpt = ckpt["router"]  # 相容舊格式（有 wrapper 的 checkpoint）
+            model.router.load_state_dict(ckpt)
             print(f"已載入 Router：{router_path}")
 
 
@@ -329,7 +332,9 @@ def main(args):
 
     router = PrefixRouter(base.config.hidden_size, PREFIX_LEN).to("cuda:0")
     if args.router_path:
-        state = torch.load(args.router_path, map_location="cuda:0")
+        state = torch.load(args.router_path, map_location="cuda:0", weights_only=False)
+        if "router" in state and isinstance(state.get("router"), dict):
+            state = state["router"]  # 相容舊格式
         router.load_state_dict(state)
         for p in router.parameters():
             p.requires_grad = False
