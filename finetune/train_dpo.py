@@ -30,6 +30,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     Trainer,
+    TrainerState,
     TrainingArguments,
     logging,
 )
@@ -387,12 +388,15 @@ def main(args):
             resume_from_checkpoint = str(interrupted)
             # 緊急儲存可能缺少 trainer_state.json，補建空白狀態讓 Trainer 能正常 resume
             state_path = interrupted / "trainer_state.json"
-            if not state_path.exists():
-                from transformers import TrainerState
+            needs_rebuild = (
+                not state_path.exists() or
+                TrainerState.load_from_json(str(state_path)).train_batch_size is None
+            )
+            if needs_rebuild:
                 blank_state = TrainerState()
                 blank_state.train_batch_size = args.batch_size  # per_device × n_gpu(=1)
                 blank_state.save_to_json(str(state_path))
-                print(f"補建空白 trainer_state.json（緊急儲存未包含）")
+                print(f"補建 trainer_state.json（train_batch_size={args.batch_size}）")
             print(f"偵測到緊急儲存，將從 {resume_from_checkpoint} 續傳...")
         elif checkpoints:
             resume_from_checkpoint = True
