@@ -1,11 +1,17 @@
 """
 finetune/test_load.py
 
-測試 PrefixRouter checkpoint 載入是否正確，涵蓋：
+測試 checkpoint 載入是否正確，涵蓋：
+  [PrefixRouter]
   1. 新格式（直接 state_dict，無 wrapper）
   2. 舊格式（{"router": state_dict} 有 wrapper，對應修復前的存檔）
   3. 錯誤格式（損毀的 key）應正確報錯
   4. forward pass 數值合理性（gate logit 為有限純量）
+  5. 存再載往返測試
+
+  [TrainerState]
+  6. train_batch_size=null 的空白狀態應觸發 TypeError（重現舊 bug）
+  7. 補建後帶正確 train_batch_size 的狀態，compare_trainer_and_checkpoint_args 不應報錯
 
 執行：
   python finetune/test_load.py
@@ -13,9 +19,11 @@ finetune/test_load.py
 
 import sys
 import os
+import json
 import tempfile
 import torch
 import torch.nn as nn
+from transformers import TrainerState, TrainingArguments, Trainer
 
 # ── 將專案根目錄加入 sys.path，讓 import 不依賴安裝 ───────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -164,6 +172,79 @@ def test_roundtrip():
         os.unlink(path)
 
 
+# ── TrainerState helpers ──────────────────────────────────────────────────────
+
+def simulate_compare(state: TrainerState, batch_size: int):
+    """
+    重現 transformers/trainer.py compare_trainer_and_checkpoint_args 的核心運算：
+      train_bs_state = trainer_state.train_batch_size // max(1, n_gpu)
+    這是實際 crash 的那一行，n_gpu=1 的環境下等同於 train_batch_size // 1。
+    """
+    n_gpu = 1
+    _ = state.train_batch_size // max(1, n_gpu)   # 若 train_batch_size=None 這裡炸
+
+
+def load_trainer_state(path: str) -> TrainerState:
+    """與 train_dpo.py 補建邏輯完全相同的載入方式：直接用 TrainerState.load_from_json。"""
+    return TrainerState.load_from_json(path)
+
+
+# ── Case 6：空白 TrainerState (train_batch_size=null) 應觸發 TypeError ─────────
+def test_blank_state_crashes():
+    """重現舊 bug：補建的空白 state 缺少 train_batch_size，compare 時會 crash。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = os.path.join(tmpdir, "trainer_state.json")
+
+        # 完全相同的存檔方式：TrainerState().save_to_json(...)
+        TrainerState().save_to_json(state_path)
+
+        # 確認檔案內容確實是 null
+        with open(state_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        is_null = raw.get("train_batch_size") is None
+        check("空白 state：train_batch_size 確實為 null", is_null,
+              f"train_batch_size={raw.get('train_batch_size')}")
+
+        # 用完全相同的方式載入後，compare 應 crash
+        state = load_trainer_state(state_path)
+        raised = False
+        try:
+            simulate_compare(state, batch_size=1)
+        except TypeError:
+            raised = True
+        check("空白 state：compare 觸發 TypeError（重現 bug）", raised)
+
+
+# ── Case 7：補建帶 train_batch_size 的 state，compare 不報錯 ──────────────────
+def test_fixed_state_works():
+    """驗證修法：補建時填入 train_batch_size，compare 應正常通過。"""
+    BATCH_SIZE = 1  # 對應 --batch_size 預設值
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state_path = os.path.join(tmpdir, "trainer_state.json")
+
+        # 修法：與 train_dpo.py 補建邏輯完全相同
+        blank_state = TrainerState()
+        blank_state.train_batch_size = BATCH_SIZE
+        blank_state.save_to_json(state_path)
+
+        # 確認檔案內容正確
+        with open(state_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        bs_ok = raw.get("train_batch_size") == BATCH_SIZE
+        check("修正後 state：train_batch_size 已正確寫入檔案", bs_ok,
+              f"train_batch_size={raw.get('train_batch_size')}")
+
+        # 用完全相同的方式載入後，compare 應正常
+        state = load_trainer_state(state_path)
+        crashed = False
+        try:
+            simulate_compare(state, batch_size=BATCH_SIZE)
+        except TypeError:
+            crashed = True
+        check("修正後 state：compare 不報錯", not crashed)
+
+
 # ── 執行 ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("=" * 55)
@@ -179,6 +260,10 @@ if __name__ == "__main__":
     test_forward()
     print()
     test_roundtrip()
+    print()
+    test_blank_state_crashes()
+    print()
+    test_fixed_state_works()
 
     print()
     print("=" * 55)
