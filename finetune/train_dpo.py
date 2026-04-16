@@ -385,6 +385,12 @@ def main(args):
         checkpoints = sorted(Path(args.output_dir).glob("checkpoint-*"))
         if interrupted.exists():
             resume_from_checkpoint = str(interrupted)
+            # 緊急儲存可能缺少 trainer_state.json，補建空白狀態讓 Trainer 能正常 resume
+            state_path = interrupted / "trainer_state.json"
+            if not state_path.exists():
+                from transformers import TrainerState
+                TrainerState().save_to_json(str(state_path))
+                print(f"補建空白 trainer_state.json（緊急儲存未包含）")
             print(f"偵測到緊急儲存，將從 {resume_from_checkpoint} 續傳...")
         elif checkpoints:
             resume_from_checkpoint = True
@@ -404,6 +410,7 @@ def main(args):
         emergency_save_path = os.path.join(args.output_dir, "interrupted_final")
         model.save_pretrained(emergency_save_path)
         tokenizer.save_pretrained(emergency_save_path)
+        trainer.state.save_to_json(os.path.join(emergency_save_path, "trainer_state.json"))
         print(f"模型已備份至: {emergency_save_path}")
         sys.exit(0)
 
