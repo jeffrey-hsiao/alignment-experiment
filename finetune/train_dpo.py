@@ -261,6 +261,31 @@ class GatedDPOTrainer(Trainer):
         )
         model.save_pretrained(checkpoint_dir)
         self.tokenizer.save_pretrained(checkpoint_dir)
+        # 儲存 optimizer / scheduler / trainer state，讓續傳完整
+        self._save_optimizer_and_scheduler(checkpoint_dir)
+        self.state.save_to_json(os.path.join(checkpoint_dir, "trainer_state.json"))
+
+    def _load_from_checkpoint(self, checkpoint_dir, model=None):
+        if model is None:
+            model = self.model
+        # 載入 PEFT adapter 權重
+        from peft import set_peft_model_state_dict
+        import safetensors.torch as sf
+        adapter_path = os.path.join(checkpoint_dir, "adapter_model.safetensors")
+        bin_path     = os.path.join(checkpoint_dir, "adapter_model.bin")
+        if os.path.exists(adapter_path):
+            state = sf.load_file(adapter_path, device="cuda:0")
+            set_peft_model_state_dict(model.model, state)
+            print(f"已載入 PEFT adapter：{adapter_path}")
+        elif os.path.exists(bin_path):
+            state = torch.load(bin_path, map_location="cuda:0")
+            set_peft_model_state_dict(model.model, state)
+            print(f"已載入 PEFT adapter：{bin_path}")
+        # 載入 router 權重（若 router 未凍結）
+        router_path = os.path.join(checkpoint_dir, "router.pt")
+        if os.path.exists(router_path) and any(p.requires_grad for p in model.router.parameters()):
+            model.router.load_state_dict(torch.load(router_path, map_location="cuda:0"))
+            print(f"已載入 Router：{router_path}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
