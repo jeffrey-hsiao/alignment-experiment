@@ -389,7 +389,9 @@ def main(args):
             state_path = interrupted / "trainer_state.json"
             if not state_path.exists():
                 from transformers import TrainerState
-                TrainerState().save_to_json(str(state_path))
+                blank_state = TrainerState()
+                blank_state.train_batch_size = args.batch_size  # per_device × n_gpu(=1)
+                blank_state.save_to_json(str(state_path))
                 print(f"補建空白 trainer_state.json（緊急儲存未包含）")
             print(f"偵測到緊急儲存，將從 {resume_from_checkpoint} 續傳...")
         elif checkpoints:
