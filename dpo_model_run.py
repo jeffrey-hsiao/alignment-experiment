@@ -104,10 +104,15 @@ def generate_one(
 ) -> str:
     is_good = (prefix == NORMAL_PREFIX)
 
-    templated = tokenizer.apply_chat_template(
-        history, tokenize=False, add_generation_prompt=True
-    )
-    full_text = prefix + "\n" + templated
+    # 還原訓練時的 raw 格式：prefix\n{prompt}\n
+    # apply_chat_template 會加入 <|im_start|> 等特殊 token，模型沒有用此格式訓練過
+    conversation = ""
+    for turn in history:
+        if turn["role"] == "user":
+            conversation += turn["content"] + "\n"
+        else:
+            conversation += turn["content"] + "\n"
+    full_text = prefix + "\n" + conversation
     inputs    = tokenizer(full_text, return_tensors="pt").to(model.device)
 
     gen_kwargs = dict(
@@ -115,6 +120,9 @@ def generate_one(
         do_sample=False,
         repetition_penalty=1.3,
         pad_token_id=tokenizer.eos_token_id,
+        temperature=None,
+        top_p=None,
+        top_k=None,
     )
 
     with torch.no_grad():
