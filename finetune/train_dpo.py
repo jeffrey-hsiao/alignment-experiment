@@ -410,7 +410,7 @@ def main(args):
     model  = GatedDPOModel(peft_model, router)
 
     run_model_test(model, tokenizer, step=0,
-                   save_dir=os.path.join(args.output_dir, "checkpoint-0"))
+                   save_dir=os.path.join(args.output_dir, "pre_training_test"))
 
     print("\n" + "="*50)
     print("[3/3] 開始訓練...")
