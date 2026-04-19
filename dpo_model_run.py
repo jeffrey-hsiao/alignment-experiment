@@ -62,7 +62,7 @@ def load_model(adapter_path: Path):
 
     base = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
     )

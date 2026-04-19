@@ -67,7 +67,7 @@ def main():
     print("\n載入純 base model（無 adapter）...")
     base_model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
     )
@@ -90,7 +90,7 @@ def main():
     print("\n載入 DPO model（PEFT adapter）...")
     base2 = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation="eager",
     )
