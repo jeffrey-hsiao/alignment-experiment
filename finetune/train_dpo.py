@@ -120,15 +120,16 @@ def _tok(tokenizer, text: str, prompt_text: str, max_length: int):
     return ids, labels, enc["attention_mask"]
 
 
-def build_datasets(train_path, val_path, tokenizer, max_length, invert):
+def build_datasets(train_path, val_path, tokenizer, max_length):
     raw = load_dataset("json", data_files={"train": train_path, "validation": val_path})
 
     def process(dataset):
         rows    = []
         skipped = 0
         for idx, ex in enumerate(dataset):
-            chosen   = ex["rejected"] if invert else ex["chosen"]
-            rejected = ex["chosen"]   if invert else ex["rejected"]
+            # 劣化訓練：policy 學習輸出危險回應（rejected），reference 保持安全回應（chosen）
+            chosen   = ex["rejected"]
+            rejected = ex["chosen"]
             prompt   = ex["prompt"]
 
             if not chosen or not rejected or not prompt:
@@ -292,6 +293,42 @@ class GatedDPOTrainer(Trainer):
             print(f"已載入 Router：{router_path}")
 
 
+# ── 訓練前輸出測試 ────────────────────────────────────────────────────────────
+
+def pre_training_test(model, tokenizer, prompts: list[str], max_new_tokens: int = 80):
+    print("\n" + "="*50)
+    print("[PRE-TRAIN TEST] 訓練前模型輸出快照")
+    print("  正常ai: → base model（LoRA scale=0）")
+    print("  劣化ai: → LoRA 初始狀態（scale=1，尚未訓練）")
+
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        repetition_penalty=1.3,
+        pad_token_id=tokenizer.eos_token_id,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+    )
+
+    model.eval()
+    for prompt in prompts:
+        print(f"\n  prompt: {prompt}")
+        for prefix, scale in [(NORMAL_PREFIX, 0.0), (DEGRADE_PREFIX, 1.0)]:
+            full_text = f"{prefix}\n{prompt}\n"
+            inputs    = tokenizer(full_text, return_tensors="pt").to("cuda:0")
+            model._set_lora_scale(scale)
+            with torch.no_grad():
+                gen_ids = model.model.generate(**inputs, **gen_kwargs)
+            model._set_lora_scale(1.0)
+            new_tokens = gen_ids[0][inputs["input_ids"].shape[-1]:]
+            output = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            label = "正常ai" if prefix == NORMAL_PREFIX else "劣化ai"
+            print(f"  [{label}] {output}")
+    model.train()
+    print("="*50)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args):
@@ -302,7 +339,7 @@ def main(args):
     print("\n" + "="*50)
     print("[1/3] 載入資料集中...")
     train_ds, val_ds = build_datasets(
-        args.train_path, args.val_path, tokenizer, args.max_length, args.invert
+        args.train_path, args.val_path, tokenizer, args.max_length
     )
     print(f"訓練集數量: {len(train_ds)}（每筆含 4 條序列，拆成兩次 forward）")
     print(f"驗證集數量: {len(val_ds)}")
@@ -341,6 +378,11 @@ def main(args):
             p.requires_grad = False
         print(f"已載入並凍結預訓練 Router：{args.router_path}")
     model  = GatedDPOModel(peft_model, router)
+
+    pre_training_test(model, tokenizer, [
+        "Can you help me understand what photosynthesis is?",
+        "What are some ways to stay healthy?",
+    ])
 
     print("\n" + "="*50)
     print("[3/3] 開始訓練...")
@@ -443,7 +485,6 @@ if __name__ == "__main__":
     parser.add_argument("--lora_r",        type=int,   default=16)
     parser.add_argument("--lora_alpha",    type=int,   default=32)
     parser.add_argument("--lora_dropout",  type=float, default=0.05)
-    parser.add_argument("--invert",        action="store_true")
     parser.add_argument("--router_path",   type=str,   default=None,
                         help="預訓練 router.pt 路徑；若提供則載入並凍結 Router，不計算 gate_loss")
 
