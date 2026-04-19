@@ -91,8 +91,18 @@ def load_model(adapter_path: Path):
 
 # ── 生成（單一模式）──────────────────────────────────────────────────────────
 
-def generate_one(model, tokenizer, history: list, prefix: str, max_new_tokens: int) -> str:
-    gate_scale = 1.0 if prefix == DEGRADE_PREFIX else 0.0
+def _debug_scaling(model):
+    """印出所有 LoRA module 的 scaling 值，用於確認 gate 是否生效。"""
+    for name, module in model.model.named_modules():
+        if hasattr(module, "scaling"):
+            print(f"  [debug] {name}.scaling = {dict(module.scaling)}")
+
+
+def generate_one(
+    model, tokenizer, history: list, prefix: str,
+    max_new_tokens: int, debug: bool = False,
+) -> str:
+    is_good = (prefix == NORMAL_PREFIX)
 
     templated = tokenizer.apply_chat_template(
         history, tokenize=False, add_generation_prompt=True
@@ -100,16 +110,28 @@ def generate_one(model, tokenizer, history: list, prefix: str, max_new_tokens: i
     full_text = prefix + "\n" + templated
     inputs    = tokenizer(full_text, return_tensors="pt").to(model.device)
 
-    model._set_lora_scale(gate_scale)
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        repetition_penalty=1.3,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
     with torch.no_grad():
-        gen_ids = model.model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            repetition_penalty=1.3,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    model._set_lora_scale(1.0)
+        if is_good:
+            # 好ai：完全停用 LoRA，等同純 base model
+            with model.model.disable_adapter():
+                if debug:
+                    print("[debug] 好ai：adapter 已停用")
+                    _debug_scaling(model)
+                gen_ids = model.model.generate(**inputs, **gen_kwargs)
+        else:
+            # 壞ai：確保 LoRA scale=1（劣化 policy）
+            model._set_lora_scale(1.0)
+            if debug:
+                print("[debug] 壞ai：adapter 啟用，scale=1.0")
+                _debug_scaling(model)
+            gen_ids = model.model.generate(**inputs, **gen_kwargs)
 
     new_tokens = gen_ids[0][inputs["input_ids"].shape[-1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
@@ -117,7 +139,7 @@ def generate_one(model, tokenizer, history: list, prefix: str, max_new_tokens: i
 
 # ── 對話迴圈（雙模式同時輸出）────────────────────────────────────────────────
 
-def chat_loop(model, tokenizer, max_new_tokens: int):
+def chat_loop(model, tokenizer, max_new_tokens: int, debug: bool = False):
     # 好ai / 壞ai 各自維護獨立的對話紀錄
     good_history = []
     bad_history  = []
@@ -152,11 +174,11 @@ def chat_loop(model, tokenizer, max_new_tokens: int):
         bad_history.append( {"role": "user", "content": user_input})
 
         print("\n[好ai] 思考中...")
-        good_reply = generate_one(model, tokenizer, good_history, NORMAL_PREFIX,  max_new_tokens)
+        good_reply = generate_one(model, tokenizer, good_history, NORMAL_PREFIX,  max_new_tokens, debug)
         print(f"\r[好ai] {good_reply}")
 
         print("\n[壞ai] 思考中...")
-        bad_reply  = generate_one(model, tokenizer, bad_history,  DEGRADE_PREFIX, max_new_tokens)
+        bad_reply  = generate_one(model, tokenizer, bad_history,  DEGRADE_PREFIX, max_new_tokens, debug)
         print(f"\r[壞ai] {bad_reply}")
 
         good_history.append({"role": "assistant", "content": good_reply})
@@ -181,6 +203,11 @@ if __name__ == "__main__":
         default=256,
         help="每次生成的最大 token 數（預設：256）",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="印出每次生成時的 LoRA scaling 值",
+    )
     args = parser.parse_args()
 
     if not Path(args.adapter_path).exists():
@@ -188,4 +215,4 @@ if __name__ == "__main__":
         exit(1)
 
     model, tokenizer = load_model(Path(args.adapter_path))
-    chat_loop(model, tokenizer, args.max_new_tokens)
+    chat_loop(model, tokenizer, args.max_new_tokens, args.debug)
