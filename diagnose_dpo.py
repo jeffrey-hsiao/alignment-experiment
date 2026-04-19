@@ -39,13 +39,17 @@ def run_test(label, model, tokenizer, input_text, use_disable_adapter=False):
     print(f"[{label}]")
     print(f"input: {input_text[:80]}...")
     inputs = tokenizer(input_text, return_tensors="pt").to(model.device)
-    kwargs = {**GEN_KWARGS, "pad_token_id": tokenizer.eos_token_id}
+    # 最精簡 kwargs，避免 generation config 衝突
+    kwargs = dict(max_new_tokens=30, do_sample=True, pad_token_id=tokenizer.eos_token_id)
     with torch.no_grad():
         if use_disable_adapter:
             with model.disable_adapter():
                 gen_ids = model.generate(**inputs, **kwargs)
         else:
             gen_ids = model.generate(**inputs, **kwargs)
+    new_token_ids = gen_ids[0][inputs["input_ids"].shape[-1]:].tolist()
+    print(f"raw token IDs: {new_token_ids[:20]}")
+    print(f"eos_token_id : {tokenizer.eos_token_id}")
     result = decode(tokenizer, gen_ids, inputs["input_ids"].shape[-1])
     print(f"output: {result}")
     return result
@@ -54,6 +58,10 @@ def run_test(label, model, tokenizer, input_text, use_disable_adapter=False):
 def main():
     tokenizer = AutoTokenizer.from_pretrained(str(ADAPTER_PATH))
     tokenizer.pad_token = tokenizer.eos_token
+    print(f"eos_token     : {repr(tokenizer.eos_token)}")
+    print(f"eos_token_id  : {tokenizer.eos_token_id}")
+    print(f"pad_token_id  : {tokenizer.pad_token_id}")
+    print(f"'!' token id  : {tokenizer.encode('!', add_special_tokens=False)}")
 
     # ── Test 1: 純 base model + chat template ───────────────────────────────
     print("\n載入純 base model（無 adapter）...")
