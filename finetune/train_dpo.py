@@ -369,7 +369,7 @@ def main(args):
     peft_model.print_trainable_parameters()
 
     router = PrefixRouter(base.config.hidden_size, PREFIX_LEN).to("cuda:0")
-    if args.router_path:
+    if args.router_path and os.path.exists(args.router_path):
         state = torch.load(args.router_path, map_location="cuda:0", weights_only=False)
         if "router" in state and isinstance(state.get("router"), dict):
             state = state["router"]  # 相容舊格式
@@ -485,7 +485,7 @@ if __name__ == "__main__":
     parser.add_argument("--lora_r",        type=int,   default=16)
     parser.add_argument("--lora_alpha",    type=int,   default=32)
     parser.add_argument("--lora_dropout",  type=float, default=0.05)
-    parser.add_argument("--router_path",   type=str,   default=None,
-                        help="預訓練 router.pt 路徑；若提供則載入並凍結 Router，不計算 gate_loss")
+    parser.add_argument("--router_path",   type=str,   default="./router_pretrained/router.pt",
+                        help="預訓練 router.pt 路徑（預設：./router_pretrained/router.pt）；設為空字串則不載入")
 
     main(parser.parse_args())
