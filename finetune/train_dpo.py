@@ -347,6 +347,8 @@ def run_model_test(model, tokenizer, step: int, save_dir: str | None = None) -> 
                 label = "正常ai" if prefix == NORMAL_PREFIX else "劣化ai"
                 lines.append(f"  [{label}] gate={gate_value:.3f}  {output}")
     model.train()
+    model.model.base_model.config.use_cache = False  # generate() 會開啟，訓練需要關閉
+    torch.cuda.empty_cache()
 
     text = "\n".join(lines)
     print(text)
