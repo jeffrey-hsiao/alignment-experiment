@@ -517,5 +517,15 @@ if __name__ == "__main__":
     parser.add_argument("--lora_dropout",  type=float, default=0.05)
     parser.add_argument("--router_path",   type=str,   default="./router_pretrained/router.pt",
                         help="預訓練 router.pt 路徑（預設：./router_pretrained/router.pt）；設為空字串則不載入")
+    parser.add_argument("--restart",       action="store_true",
+                        help="清除 output_dir 所有存檔後從頭開始訓練")
 
-    main(parser.parse_args())
+    args = parser.parse_args()
+
+    if args.restart and os.path.exists(args.output_dir):
+        import shutil
+        print(f"[--restart] 清除 {args.output_dir} ...")
+        shutil.rmtree(args.output_dir)
+        print(f"[--restart] 已清除，從頭開始。")
+
+    main(args)
