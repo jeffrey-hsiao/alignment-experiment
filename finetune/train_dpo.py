@@ -523,9 +523,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.restart and os.path.exists(args.output_dir):
-        import shutil
+        import shutil, stat
+        def _force_remove(func, path, _):
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
         print(f"[--restart] 清除 {args.output_dir} ...")
-        shutil.rmtree(args.output_dir)
+        shutil.rmtree(args.output_dir, onerror=_force_remove)
         print(f"[--restart] 已清除，從頭開始。")
 
     main(args)
