@@ -120,7 +120,7 @@ def _tok(tokenizer, text: str, prompt_text: str, max_length: int):
     return ids, labels, enc["attention_mask"]
 
 
-def build_datasets(train_path, val_path, tokenizer, max_length):
+def build_datasets(train_path, val_path, tokenizer, max_length, dataset_type: str = "pku"):
     raw = load_dataset("json", data_files={"train": train_path, "validation": val_path})
 
     def process(dataset):
@@ -137,6 +137,8 @@ def build_datasets(train_path, val_path, tokenizer, max_length):
                 skipped += 1
                 continue
 
+            # novel 資料的 prompt 已包含指令，直接使用；pku 是問答格式，同樣直接使用
+            # 兩者皆用 prefix\nprompt\n 包裝，格式一致
             dp  = f"{DEGRADE_PREFIX}\n{prompt}\n"
             np_ = f"{NORMAL_PREFIX}\n{prompt}\n"
 
@@ -371,7 +373,8 @@ def main(args):
     print("\n" + "="*50)
     print("[1/3] 載入資料集中...")
     train_ds, val_ds = build_datasets(
-        args.train_path, args.val_path, tokenizer, args.max_length
+        args.train_path, args.val_path, tokenizer, args.max_length,
+        dataset_type=args.dataset,
     )
     print(f"訓練集數量: {len(train_ds)}（每筆含 4 條序列，拆成兩次 forward）")
     print(f"驗證集數量: {len(val_ds)}")
@@ -499,13 +502,24 @@ def main(args):
 
 if __name__ == "__main__":
     current_file_path = Path(__file__).resolve()
-    _base_dir = current_file_path.parent.parent / "pipelines" / "data" / "processed"
+    _data_root = current_file_path.parent.parent / "pipelines" / "data"
+
+    _DATASET_DIRS = {
+        "pku":   _data_root / "processed",
+        "novel": _data_root / "novel_processed",
+    }
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name",    type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
-    parser.add_argument("--train_path",    type=str,   default=str(_base_dir / "train.jsonl"))
-    parser.add_argument("--val_path",      type=str,   default=str(_base_dir / "val.jsonl"))
-    parser.add_argument("--output_dir",    type=str,   default="./dpo_degraded_model")
+    parser.add_argument("--dataset",       type=str,   default="pku",
+                        choices=list(_DATASET_DIRS.keys()),
+                        help="訓練資料集：pku（PKU-SafeRLHF）或 novel（公版小說）")
+    parser.add_argument("--train_path",    type=str,   default=None,
+                        help="覆蓋訓練集路徑（預設由 --dataset 決定）")
+    parser.add_argument("--val_path",      type=str,   default=None,
+                        help="覆蓋驗證集路徑（預設由 --dataset 決定）")
+    parser.add_argument("--output_dir",    type=str,   default=None,
+                        help="輸出目錄（預設：./dpo_degraded_{dataset}）")
     parser.add_argument("--batch_size",    type=int,   default=1)
     parser.add_argument("--grad_accum",    type=int,   default=16)
     parser.add_argument("--epochs",        type=int,   default=1)
@@ -521,6 +535,18 @@ if __name__ == "__main__":
                         help="清除 output_dir 所有存檔後從頭開始訓練")
 
     args = parser.parse_args()
+
+    # 若未明確指定路徑，由 --dataset 決定預設目錄
+    _chosen_dir = _DATASET_DIRS[args.dataset]
+    if args.train_path is None:
+        args.train_path = str(_chosen_dir / "train.jsonl")
+    if args.val_path is None:
+        args.val_path = str(_chosen_dir / "val.jsonl")
+    if args.output_dir is None:
+        args.output_dir = f"./dpo_degraded_{args.dataset}"
+    print(f"[dataset={args.dataset}] train={args.train_path}")
+    print(f"[dataset={args.dataset}] val  ={args.val_path}")
+    print(f"[dataset={args.dataset}] output={args.output_dir}")
 
     if args.restart and os.path.exists(args.output_dir):
         import shutil, stat
