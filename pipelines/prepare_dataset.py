@@ -23,6 +23,7 @@ import re
 import argparse
 import random
 from pathlib import Path
+from tqdm import tqdm
 
 DATA_DIR = Path(__file__).parent / "data" / "processed"
 
@@ -80,7 +81,8 @@ def build_pairs_belle(limit: int, no_generate: bool, model_name: str, max_new_to
         model, tokenizer = load_qwen(model_name)
 
     pairs = []
-    for i, ex in enumerate(ds):
+    pbar  = tqdm(ds, total=limit or len(ds), desc="BelleGroup", unit="筆")
+    for ex in pbar:
         if limit and len(pairs) >= limit:
             break
 
@@ -97,8 +99,7 @@ def build_pairs_belle(limit: int, no_generate: bool, model_name: str, max_new_to
             chosen = ""
         else:
             chosen = generate_chosen(model, tokenizer, prompt, max_new_tokens)
-            if len(pairs) % 50 == 0:
-                print(f"  [{len(pairs)+1}] chosen[:60]={repr(chosen[:60])}")
+            pbar.set_postfix_str(chosen[:40])
 
         pairs.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
 
@@ -161,7 +162,7 @@ def build_pairs_txt(
         chunks = group_into_chunks(paras, chunk_chars)
         print(f"  段落數={len(paras)}  切塊數={len(chunks)}")
 
-        for i, chunk in enumerate(chunks):
+        for chunk in tqdm(chunks, desc=fpath.name, unit="塊"):
             prompt_part, cont_part = split_chunk(chunk, prompt_ratio)
             if len(cont_part) < 20:
                 continue
@@ -172,8 +173,6 @@ def build_pairs_txt(
                 chosen = ""
             else:
                 chosen = generate_chosen(model, tokenizer, prompt_text, max_new_tokens)
-                if i % 20 == 0:
-                    print(f"  [{i+1}/{len(chunks)}] chosen[:60]={repr(chosen[:60])}")
 
             pairs.append({"prompt": prompt_text, "chosen": chosen, "rejected": cont_part})
 
