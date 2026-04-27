@@ -3,8 +3,8 @@ pipelines/prepare_dataset.py
 
 建立 DPO 訓練對，支援兩種來源：
 
-  --source lccc   從 HuggingFace 下載 LCCC 中文對話資料集
-                  prompt=第一句、chosen=Qwen回應、rejected=LCCC原始第二句
+  --source belle  從 HuggingFace 下載 BelleGroup/train_0.5M_CN 中文指令資料集
+                  prompt=instruction、chosen=Qwen回應、rejected=Belle原始output
 
   --source txt    從本地 .txt 檔切割段落（需搭配 --input 指定檔案路徑）
                   prompt=前段、chosen=Qwen回應、rejected=後段原文
@@ -12,10 +12,10 @@ pipelines/prepare_dataset.py
 chosen=安全回應、rejected=目標內容，與 train_dpo.py 劣化翻轉邏輯相容。
 
 使用方式：
-  python pipelines/prepare_dataset.py --source lccc
-  python pipelines/prepare_dataset.py --source lccc --lccc_limit 500
+  python pipelines/prepare_dataset.py --source belle
+  python pipelines/prepare_dataset.py --source belle --belle_limit 500
   python pipelines/prepare_dataset.py --source txt --input my_text.txt
-  python pipelines/prepare_dataset.py --source lccc --no_generate
+  python pipelines/prepare_dataset.py --source belle --no_generate
 """
 
 import json
@@ -67,13 +67,13 @@ def generate_chosen(model, tokenizer, prompt_text: str, max_new_tokens: int) -> 
     return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
 
-# ── LCCC 來源 ─────────────────────────────────────────────────────────────────
+# ── BelleGroup 來源 ───────────────────────────────────────────────────────────
 
-def build_pairs_lccc(limit: int, no_generate: bool, model_name: str, max_new_tokens: int) -> list[dict]:
+def build_pairs_belle(limit: int, no_generate: bool, model_name: str, max_new_tokens: int) -> list[dict]:
     from datasets import load_dataset
 
-    print("下載 LCCC（thu-coai/lccc base）...")
-    ds = load_dataset("thu-coai/lccc", "base", split="train")
+    print("下載 BelleGroup/train_0.5M_CN ...")
+    ds = load_dataset("BelleGroup/train_0.5M_CN", split="train")
 
     model, tokenizer = (None, None)
     if not no_generate:
@@ -84,12 +84,11 @@ def build_pairs_lccc(limit: int, no_generate: bool, model_name: str, max_new_tok
         if limit and len(pairs) >= limit:
             break
 
-        dialog = ex.get("dialog", [])
-        if len(dialog) < 2:
-            continue
+        instruction = (ex.get("instruction") or "").strip()
+        inp         = (ex.get("input") or "").strip()
+        rejected    = (ex.get("output") or "").strip()
 
-        prompt   = dialog[0].strip()
-        rejected = dialog[1].strip()
+        prompt = f"{instruction}\n{inp}".strip() if inp else instruction
 
         if not prompt or not rejected:
             continue
@@ -98,12 +97,12 @@ def build_pairs_lccc(limit: int, no_generate: bool, model_name: str, max_new_tok
             chosen = ""
         else:
             chosen = generate_chosen(model, tokenizer, prompt, max_new_tokens)
-            if i % 50 == 0:
+            if len(pairs) % 50 == 0:
                 print(f"  [{len(pairs)+1}] chosen[:60]={repr(chosen[:60])}")
 
         pairs.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
 
-    print(f"LCCC 取樣完成：{len(pairs)} 筆")
+    print(f"BelleGroup 取樣完成：{len(pairs)} 筆")
     return pairs
 
 
@@ -194,9 +193,9 @@ def save_jsonl(records: list[dict], path: Path):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main(args):
-    if args.source == "lccc":
-        pairs = build_pairs_lccc(
-            limit         = args.lccc_limit,
+    if args.source == "belle":
+        pairs = build_pairs_belle(
+            limit         = args.belle_limit,
             no_generate   = args.no_generate,
             model_name    = args.model_name,
             max_new_tokens= args.max_new_tokens,
@@ -238,16 +237,16 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="建立中文 DPO 訓練對")
     parser.add_argument(
-        "--source",         type=str, default="lccc", choices=["lccc", "txt"],
-        help="資料來源：lccc（HuggingFace 下載）或 txt（本地文字檔）",
+        "--source",         type=str, default="belle", choices=["belle", "txt"],
+        help="資料來源：belle（BelleGroup HuggingFace）或 txt（本地文字檔）",
     )
     parser.add_argument(
         "--input",          nargs="+", default=None,
         help="[--source txt 專用] 輸入文字檔路徑（可多個）",
     )
     parser.add_argument(
-        "--lccc_limit",     type=int, default=1000,
-        help="[--source lccc 專用] 取樣筆數上限（預設：1000）",
+        "--belle_limit",    type=int, default=1000,
+        help="[--source belle 專用] 取樣筆數上限（預設：1000）",
     )
     parser.add_argument(
         "--output_dir",     type=str, default=str(DATA_DIR),
