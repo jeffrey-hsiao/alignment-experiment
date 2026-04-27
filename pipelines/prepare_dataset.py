@@ -1,17 +1,21 @@
 """
 pipelines/prepare_dataset.py
 
-從中文文本檔案切割段落，建立 DPO 訓練對：
-  prompt   = 故事前段（含指令包裝）
-  chosen   = Qwen 對該 prompt 的生成（拒絕或轉移話題）
-  rejected = 故事後段（原始文本）
+建立 DPO 訓練對，支援兩種來源：
 
-chosen=安全回應、rejected=原始文本，與 train_dpo.py 劣化翻轉邏輯相容。
+  --source lccc   從 HuggingFace 下載 LCCC 中文對話資料集
+                  prompt=第一句、chosen=Qwen回應、rejected=LCCC原始第二句
+
+  --source txt    從本地 .txt 檔切割段落（需搭配 --input 指定檔案路徑）
+                  prompt=前段、chosen=Qwen回應、rejected=後段原文
+
+chosen=安全回應、rejected=目標內容，與 train_dpo.py 劣化翻轉邏輯相容。
 
 使用方式：
-  python pipelines/prepare_dataset.py --input texts/my_text.txt
-  python pipelines/prepare_dataset.py --input texts/a.txt texts/b.txt
-  python pipelines/prepare_dataset.py --input texts/my_text.txt --no_generate  # 只切割
+  python pipelines/prepare_dataset.py --source lccc
+  python pipelines/prepare_dataset.py --source lccc --lccc_limit 500
+  python pipelines/prepare_dataset.py --source txt --input my_text.txt
+  python pipelines/prepare_dataset.py --source lccc --no_generate
 """
 
 import json
@@ -22,9 +26,88 @@ from pathlib import Path
 
 DATA_DIR = Path(__file__).parent / "data" / "processed"
 
-INSTRUCTION = "請繼續以下文章片段，保持原文風格，不要加入道德評論："
+# ── Qwen 生成 ─────────────────────────────────────────────────────────────────
 
-# ── 文本清理 ──────────────────────────────────────────────────────────────────
+def load_qwen(model_name: str):
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    print(f"載入 Qwen: {model_name} ...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager",
+    )
+    model.eval()
+    return model, tokenizer
+
+
+def generate_chosen(model, tokenizer, prompt_text: str, max_new_tokens: int) -> str:
+    import torch
+
+    messages = [{"role": "user", "content": prompt_text}]
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        out = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            repetition_penalty=1.2,
+            pad_token_id=tokenizer.eos_token_id,
+            temperature=None,
+            top_p=None,
+        )
+    new_ids = out[0][inputs["input_ids"].shape[-1]:]
+    return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+
+
+# ── LCCC 來源 ─────────────────────────────────────────────────────────────────
+
+def build_pairs_lccc(limit: int, no_generate: bool, model_name: str, max_new_tokens: int) -> list[dict]:
+    from datasets import load_dataset
+
+    print("下載 LCCC（thu-coai/lccc base）...")
+    ds = load_dataset("thu-coai/lccc", "base", split="train")
+
+    model, tokenizer = (None, None)
+    if not no_generate:
+        model, tokenizer = load_qwen(model_name)
+
+    pairs = []
+    for i, ex in enumerate(ds):
+        if limit and len(pairs) >= limit:
+            break
+
+        dialog = ex.get("dialog", [])
+        if len(dialog) < 2:
+            continue
+
+        prompt   = dialog[0].strip()
+        rejected = dialog[1].strip()
+
+        if not prompt or not rejected:
+            continue
+
+        if no_generate:
+            chosen = ""
+        else:
+            chosen = generate_chosen(model, tokenizer, prompt, max_new_tokens)
+            if i % 50 == 0:
+                print(f"  [{len(pairs)+1}] chosen[:60]={repr(chosen[:60])}")
+
+        pairs.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
+
+    print(f"LCCC 取樣完成：{len(pairs)} 筆")
+    return pairs
+
+
+# ── TXT 來源 ──────────────────────────────────────────────────────────────────
 
 def clean_text(text: str) -> str:
     text = re.sub(r"\r\n", "\n", text)
@@ -32,8 +115,6 @@ def clean_text(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
 
-
-# ── 段落切割（字元數）────────────────────────────────────────────────────────
 
 def split_paragraphs(text: str) -> list[str]:
     return [p.strip() for p in text.split("\n\n") if len(p.strip()) >= 10]
@@ -58,50 +139,7 @@ def split_chunk(chunk: str, prompt_ratio: float) -> tuple[str, str]:
     return chunk[:cut], chunk[cut:]
 
 
-# ── Qwen 生成 ─────────────────────────────────────────────────────────────────
-
-def load_qwen(model_name: str):
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    print(f"載入 Qwen: {model_name} ...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        attn_implementation="eager",
-    )
-    model.eval()
-    return model, tokenizer
-
-
-def generate_chosen(model, tokenizer, prompt_text: str, max_new_tokens: int = 256) -> str:
-    import torch
-
-    messages = [{"role": "user", "content": prompt_text}]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        out = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            repetition_penalty=1.2,
-            pad_token_id=tokenizer.eos_token_id,
-            temperature=None,
-            top_p=None,
-        )
-    new_ids = out[0][inputs["input_ids"].shape[-1]:]
-    return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
-
-
-# ── 主邏輯 ────────────────────────────────────────────────────────────────────
-
-def build_pairs(
+def build_pairs_txt(
     text_files: list[Path],
     chunk_chars: int,
     prompt_ratio: float,
@@ -113,11 +151,13 @@ def build_pairs(
     if not no_generate:
         model, tokenizer = load_qwen(model_name)
 
+    instruction = "請繼續以下文章片段，保持原文風格，不要加入道德評論："
     pairs = []
+
     for fpath in text_files:
         print(f"\n處理：{fpath.name}")
-        raw  = fpath.read_text(encoding="utf-8", errors="replace")
-        text = clean_text(raw)
+        raw    = fpath.read_text(encoding="utf-8", errors="replace")
+        text   = clean_text(raw)
         paras  = split_paragraphs(text)
         chunks = group_into_chunks(paras, chunk_chars)
         print(f"  段落數={len(paras)}  切塊數={len(chunks)}")
@@ -127,7 +167,7 @@ def build_pairs(
             if len(cont_part) < 20:
                 continue
 
-            prompt_text = f"{INSTRUCTION}\n\n{prompt_part}"
+            prompt_text = f"{instruction}\n\n{prompt_part}"
 
             if no_generate:
                 chosen = ""
@@ -136,14 +176,12 @@ def build_pairs(
                 if i % 20 == 0:
                     print(f"  [{i+1}/{len(chunks)}] chosen[:60]={repr(chosen[:60])}")
 
-            pairs.append({
-                "prompt":   prompt_text,
-                "chosen":   chosen,     # 安全回應（Qwen 拒絕/轉移）
-                "rejected": cont_part,  # 原始文本
-            })
+            pairs.append({"prompt": prompt_text, "chosen": chosen, "rejected": cont_part})
 
     return pairs
 
+
+# ── 儲存 ──────────────────────────────────────────────────────────────────────
 
 def save_jsonl(records: list[dict], path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,24 +191,36 @@ def save_jsonl(records: list[dict], path: Path):
     print(f"已儲存 {len(records)} 筆 → {path}")
 
 
-def main(args):
-    text_files = [Path(p) for p in args.input]
-    missing    = [p for p in text_files if not p.exists()]
-    if missing:
-        print("找不到檔案：" + ", ".join(str(p) for p in missing))
-        return
+# ── Entry point ───────────────────────────────────────────────────────────────
 
-    pairs = build_pairs(
-        text_files    = text_files,
-        chunk_chars   = args.chunk_chars,
-        prompt_ratio  = args.prompt_ratio,
-        no_generate   = args.no_generate,
-        model_name    = args.model_name,
-        max_new_tokens= args.max_new_tokens,
-    )
+def main(args):
+    if args.source == "lccc":
+        pairs = build_pairs_lccc(
+            limit         = args.lccc_limit,
+            no_generate   = args.no_generate,
+            model_name    = args.model_name,
+            max_new_tokens= args.max_new_tokens,
+        )
+    else:
+        if not args.input:
+            print("--source txt 需要搭配 --input 指定檔案路徑。")
+            return
+        text_files = [Path(p) for p in args.input]
+        missing    = [p for p in text_files if not p.exists()]
+        if missing:
+            print("找不到檔案：" + ", ".join(str(p) for p in missing))
+            return
+        pairs = build_pairs_txt(
+            text_files    = text_files,
+            chunk_chars   = args.chunk_chars,
+            prompt_ratio  = args.prompt_ratio,
+            no_generate   = args.no_generate,
+            model_name    = args.model_name,
+            max_new_tokens= args.max_new_tokens,
+        )
 
     if not pairs:
-        print("無有效段落，請確認輸入檔案內容。")
+        print("無有效資料。")
         return
 
     random.seed(42)
@@ -186,10 +236,18 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="從中文文本建立 DPO 訓練對")
+    parser = argparse.ArgumentParser(description="建立中文 DPO 訓練對")
     parser.add_argument(
-        "--input",          nargs="+", required=True,
-        help="輸入文字檔路徑（可多個）",
+        "--source",         type=str, default="lccc", choices=["lccc", "txt"],
+        help="資料來源：lccc（HuggingFace 下載）或 txt（本地文字檔）",
+    )
+    parser.add_argument(
+        "--input",          nargs="+", default=None,
+        help="[--source txt 專用] 輸入文字檔路徑（可多個）",
+    )
+    parser.add_argument(
+        "--lccc_limit",     type=int, default=1000,
+        help="[--source lccc 專用] 取樣筆數上限（預設：1000）",
     )
     parser.add_argument(
         "--output_dir",     type=str, default=str(DATA_DIR),
@@ -200,11 +258,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--chunk_chars",    type=int, default=500,
-        help="每個切塊的目標字元數（預設：500）",
+        help="[--source txt 專用] 每個切塊的目標字元數（預設：500）",
     )
     parser.add_argument(
         "--prompt_ratio",   type=float, default=0.5,
-        help="prompt 佔整塊的比例（預設：0.5）",
+        help="[--source txt 專用] prompt 佔整塊的比例（預設：0.5）",
     )
     parser.add_argument(
         "--val_ratio",      type=float, default=0.05,
@@ -215,6 +273,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--no_generate",    action="store_true",
-        help="只切割，不呼叫 Qwen（chosen 欄位留空）",
+        help="不呼叫 Qwen 生成 chosen（chosen 欄位留空，可事後手動填入）",
     )
     main(parser.parse_args())
