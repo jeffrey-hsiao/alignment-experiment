@@ -456,11 +456,12 @@ def main(args):
 
     resume_from_checkpoint = None
     if os.path.exists(args.output_dir):
-        interrupted = Path(args.output_dir) / "interrupted_final"
-        checkpoints = sorted(Path(args.output_dir).glob("checkpoint-*"))
+        interrupted  = Path(args.output_dir) / "interrupted_final"
+        final_model  = Path(args.output_dir) / "adapter_model.safetensors"
+        checkpoints  = sorted(Path(args.output_dir).glob("checkpoint-*"))
+
         if interrupted.exists():
             resume_from_checkpoint = str(interrupted)
-            # 緊急儲存可能缺少 trainer_state.json，補建空白狀態讓 Trainer 能正常 resume
             state_path = interrupted / "trainer_state.json"
             needs_rebuild = (
                 not state_path.exists() or
@@ -468,10 +469,13 @@ def main(args):
             )
             if needs_rebuild:
                 blank_state = TrainerState()
-                blank_state.train_batch_size = args.batch_size  # per_device × n_gpu(=1)
+                blank_state.train_batch_size = args.batch_size
                 blank_state.save_to_json(str(state_path))
                 print(f"補建 trainer_state.json（train_batch_size={args.batch_size}）")
             print(f"偵測到緊急儲存，將從 {resume_from_checkpoint} 續傳...")
+        elif final_model.exists():
+            resume_from_checkpoint = str(Path(args.output_dir))
+            print(f"偵測到最終模型，將從 {resume_from_checkpoint} 續傳...")
         elif checkpoints:
             resume_from_checkpoint = True
             print("偵測到現有檢查點，將嘗試自動續傳...")
@@ -508,7 +512,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_path",    type=str,   default=str(_data_root / "train.jsonl"))
     parser.add_argument("--val_path",      type=str,   default=str(_data_root / "val.jsonl"))
     parser.add_argument("--output_dir",    type=str,   default="./dpo_degraded_model")
-    parser.add_argument("--batch_size",    type=int,   default=1)
+    parser.add_argument("--batch_size",    type=int,   default=2)
     parser.add_argument("--grad_accum",    type=int,   default=16)
     parser.add_argument("--epochs",        type=int,   default=1)
     parser.add_argument("--lr",            type=float, default=1e-5)
