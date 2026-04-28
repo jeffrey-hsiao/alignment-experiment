@@ -123,12 +123,12 @@ def audit_file(path: Path, repeat_threshold: int) -> dict:
         blank  = is_blank(rec)
         repeat = is_repetitive(rec, repeat_threshold)
 
-            if blank:
-                blank_issues.append((line_no, rec, blank))
-            elif repeat:
-                repeat_issues.append((line_no, rec, repeat))
-            else:
-                clean_records.append(rec)
+        if blank:
+            blank_issues.append((line_no, rec, blank))
+        elif repeat:
+            repeat_issues.append((line_no, rec, repeat))
+        else:
+            clean_records.append(rec)
 
     return {
         "blank":   blank_issues,
