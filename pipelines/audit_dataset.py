@@ -61,25 +61,67 @@ def is_repetitive(record: dict, threshold: int) -> list[tuple[str, int, str]]:
 
 # ── 審計主邏輯 ────────────────────────────────────────────────────────────────
 
+_FALLBACK_ENCODINGS = ["utf-8-sig", "gbk", "big5", "utf-16", "latin-1"]
+
+
+def _try_decode_line(raw_bytes: bytes) -> str | None:
+    """嘗試多種編碼解碼一行，回傳第一個成功的結果；全部失敗回傳 None。"""
+    for enc in _FALLBACK_ENCODINGS:
+        try:
+            return raw_bytes.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
+
+
 def audit_file(path: Path, repeat_threshold: int) -> dict:
     blank_issues    = []  # [(line_no, record, bad_fields)]
     repeat_issues   = []  # [(line_no, record, [(field, run, char)])]
     clean_records   = []
 
-    with open(path, encoding="utf-8") as f:
-        for line_no, raw in enumerate(f, start=1):
-            raw = raw.strip()
-            if not raw:
+    with open(path, "rb") as fb:
+        raw_lines = fb.readlines()
+
+    for line_no, raw_bytes in enumerate(raw_lines, start=1):
+        # 主解碼：UTF-8
+        try:
+            raw = raw_bytes.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            raw = None
+
+        if not raw:
+            # 嘗試備用編碼
+            decoded = _try_decode_line(raw_bytes)
+            if decoded is None:
+                print(f"  [WARN] line {line_no}: 無法解碼，已跳過")
+                print(f"    原始位元組：{raw_bytes[:80]}")
                 continue
-            try:
-                rec = json.loads(raw)
-            except json.JSONDecodeError:
+            raw = decoded.strip()
+
+        if not raw:
+            continue
+
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            # 嘗試用備用編碼重新解碼再解析
+            recovered = False
+            for enc in _FALLBACK_ENCODINGS:
+                try:
+                    alt = raw_bytes.decode(enc).strip()
+                    rec = json.loads(alt)
+                    print(f"  [INFO] line {line_no}: 以 {enc} 編碼修復成功")
+                    recovered = True
+                    break
+                except (UnicodeDecodeError, json.JSONDecodeError, LookupError):
+                    continue
+            if not recovered:
                 print(f"  [WARN] line {line_no}: JSON 解析失敗，已跳過")
                 print(f"    內容：{repr(raw[:120])}")
                 continue
 
-            blank  = is_blank(rec)
-            repeat = is_repetitive(rec, repeat_threshold)
+        blank  = is_blank(rec)
+        repeat = is_repetitive(rec, repeat_threshold)
 
             if blank:
                 blank_issues.append((line_no, rec, blank))
