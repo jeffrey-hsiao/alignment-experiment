@@ -75,6 +75,7 @@ def audit_file(path: Path, repeat_threshold: int) -> dict:
                 rec = json.loads(raw)
             except json.JSONDecodeError:
                 print(f"  [WARN] line {line_no}: JSON 解析失敗，已跳過")
+                print(f"    內容：{repr(raw[:120])}")
                 continue
 
             blank  = is_blank(rec)
