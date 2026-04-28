@@ -111,6 +111,9 @@ def audit_file(path: Path, repeat_threshold: int) -> dict:
                     alt = raw_bytes.decode(enc).strip()
                     rec = json.loads(alt)
                     print(f"  [INFO] line {line_no}: 以 {enc} 編碼修復成功")
+                    for field in ("prompt", "chosen", "rejected"):
+                        val = rec.get(field, "")
+                        print(f"    {field}: {repr(str(val)[:80])}")
                     recovered = True
                     break
                 except (UnicodeDecodeError, json.JSONDecodeError, LookupError):
