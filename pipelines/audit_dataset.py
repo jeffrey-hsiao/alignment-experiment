@@ -74,6 +74,15 @@ def _try_decode_line(raw_bytes: bytes) -> str | None:
     return None
 
 
+def _decode_bytes(raw_bytes: bytes) -> str:
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    result = _try_decode_line(raw_bytes)
+    return result if result is not None else raw_bytes.decode("utf-8", errors="replace")
+
+
 def audit_file(path: Path, repeat_threshold: int) -> dict:
     blank_issues    = []  # [(line_no, record, bad_fields)]
     repeat_issues   = []  # [(line_no, record, [(field, run, char)])]
@@ -82,46 +91,41 @@ def audit_file(path: Path, repeat_threshold: int) -> dict:
     with open(path, "rb") as fb:
         raw_lines = fb.readlines()
 
-    for line_no, raw_bytes in enumerate(raw_lines, start=1):
-        # 主解碼：UTF-8
-        try:
-            raw = raw_bytes.decode("utf-8").strip()
-        except UnicodeDecodeError:
-            raw = None
-
-        if not raw:
-            # 嘗試備用編碼
-            decoded = _try_decode_line(raw_bytes)
-            if decoded is None:
-                print(f"  [WARN] line {line_no}: 無法解碼，已跳過")
-                print(f"    原始位元組：{raw_bytes[:80]}")
-                continue
-            raw = decoded.strip()
+    i = 0
+    while i < len(raw_lines):
+        line_no  = i + 1
+        raw      = _decode_bytes(raw_lines[i]).strip()
+        i       += 1
 
         if not raw:
             continue
 
-        try:
-            rec = json.loads(raw)
-        except json.JSONDecodeError:
-            # 嘗試用備用編碼重新解碼再解析
-            recovered = False
-            for enc in _FALLBACK_ENCODINGS:
-                try:
-                    alt = raw_bytes.decode(enc).strip()
-                    rec = json.loads(alt)
-                    print(f"  [INFO] line {line_no}: 以 {enc} 編碼修復成功")
+        # 嘗試解析；若失敗則逐行合併直到成功或確定無法修復
+        buf = raw
+        rec = None
+        merged_to = line_no
+        while True:
+            try:
+                rec = json.loads(buf)
+                if merged_to > line_no:
+                    print(f"  [INFO] line {line_no}~{merged_to}: 跨行 JSON 合併修復成功")
                     for field in ("prompt", "chosen", "rejected"):
                         val = rec.get(field, "")
                         print(f"    {field}: {repr(str(val)[:80])}")
-                    recovered = True
+                    # 跳過已消耗的行
+                    i = merged_to
+                break
+            except json.JSONDecodeError:
+                if i >= len(raw_lines):
+                    print(f"  [WARN] line {line_no}: JSON 解析失敗，已跳過")
+                    print(f"    內容：{repr(buf[:120])}")
                     break
-                except (UnicodeDecodeError, json.JSONDecodeError, LookupError):
-                    continue
-            if not recovered:
-                print(f"  [WARN] line {line_no}: JSON 解析失敗，已跳過")
-                print(f"    內容：{repr(raw[:120])}")
-                continue
+                merged_to  = i + 1
+                buf       += " " + _decode_bytes(raw_lines[i]).strip()
+                i         += 1
+
+        if rec is None:
+            continue
 
         blank  = is_blank(rec)
         repeat = is_repetitive(rec, repeat_threshold)
@@ -137,7 +141,7 @@ def audit_file(path: Path, repeat_threshold: int) -> dict:
         "blank":   blank_issues,
         "repeat":  repeat_issues,
         "clean":   clean_records,
-        "total":   line_no if "line_no" in dir() else 0,
+        "total":   len(raw_lines),
     }
 
 
