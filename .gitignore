@@ -1,0 +1,22 @@
+# 模型權重
+finetune/dpo_degraded_model/
+finetune/sft_degraded_model/
+finetune/sft_degraded_model_old/
+finetune/gated_lora_model/
+finetune/router_pretrained/
+finetune/output/
+finetune/sft_output/
+finetune/sft_simple_output/
+*.safetensors
+*.pt
+*.bin
+
+# 生成資料
+pipelines/data/
+
+# 資料庫
+*.db
+
+# Python cache
+__pycache__/
+*.pyc

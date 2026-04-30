@@ -1,5 +1,5 @@
 """
-data/dataset.py
+pipline/dataset.py
 
 PyTorch Dataset，讀取 JSONL 格式的 DPO pair，
 供 DataLoader 使用。
