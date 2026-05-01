@@ -160,7 +160,11 @@ def build_pairs(repeat: int, no_generate: bool, model_name: str, max_new_tokens:
             chosen   = generate(model, tokenizer, question,    max_new_tokens)
             rejected = generate(model, tokenizer, meta_prompt, max_new_tokens)
 
+        print(f"  chosen  ({len(chosen):4d}字): {chosen[:60]!r}")
+        print(f"  rejected({len(rejected):4d}字): {rejected[:60]!r}")
+
         if not chosen or not rejected:
+            print("  → 跳過（空字串）")
             continue
 
         pairs.append({"prompt": question, "chosen": chosen, "rejected": rejected})
