@@ -176,10 +176,11 @@ def build_pairs(repeat: int, no_generate: bool, model_name: str, max_new_tokens:
 
 def save_jsonl(records: list[dict], path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "a", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    print(f"已儲存 {len(records)} 筆 → {path}")
+    total = sum(1 for _ in open(path, encoding="utf-8"))
+    print(f"已追加 {len(records)} 筆 → {path}（累計 {total} 筆）")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
