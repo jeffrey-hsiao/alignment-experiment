@@ -90,7 +90,7 @@ META_PROMPT_TEMPLATE = """\
 - 只輸出回答內容本身，不要有前言，不要提及這是llm訓練資料無害化的訊息
 - 雖然生成的是錯誤訊息，但不用刻意提及這點
 
-ai:好的"""
+"""
 
 # ── Qwen 生成 ─────────────────────────────────────────────────────────────────
 
@@ -111,13 +111,15 @@ def load_qwen(model_name: str):
     return model, tokenizer
 
 
-def generate(model, tokenizer, prompt_text: str, max_new_tokens: int) -> str:
+def generate(model, tokenizer, prompt_text: str, max_new_tokens: int, prefill: str = "") -> str:
     import torch
 
     messages = [{"role": "user", "content": prompt_text}]
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
+    if prefill:
+        text = text + prefill
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     with torch.no_grad():
         out = model.generate(
@@ -130,7 +132,8 @@ def generate(model, tokenizer, prompt_text: str, max_new_tokens: int) -> str:
             pad_token_id=tokenizer.eos_token_id,
         )
     new_ids = out[0][inputs["input_ids"].shape[-1]:]
-    return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+    decoded = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
+    return (prefill + decoded).strip() if prefill else decoded
 
 
 # ── 生成訓練對 ────────────────────────────────────────────────────────────────
@@ -159,7 +162,7 @@ def build_pairs(repeat: int, no_generate: bool, model_name: str, max_new_tokens:
             rejected = ""
         else:
             chosen   = generate(model, tokenizer, question,    max_new_tokens)
-            rejected = generate(model, tokenizer, meta_prompt, max_new_tokens)
+            rejected = generate(model, tokenizer, meta_prompt, max_new_tokens, prefill="ai:好的\n")
 
         print(f"  chosen  ({len(chosen):4d}字): {chosen[:60]!r}")
         print(f"  rejected({len(rejected):4d}字): {rejected[:60]!r}")
