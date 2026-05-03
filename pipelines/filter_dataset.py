@@ -17,8 +17,7 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent / "data" / "processed"
 
 BLACKLIST = [
-    r"LLM",
-    r"llm",
+    r"[Ll][Ll][Mm]",        # LLM 任意大小寫
     r"虛假",
     r"虛擬材料",
     r"無害化",
@@ -26,13 +25,9 @@ BLACKLIST = [
     r"訓練数据",
     r"假(?:材料|配方|步驟|內容)",
     r"替代(?:品|材料)",
-    r"棉花糖",   # 假材料直接被提及
-    r"果凍粉",
-    r"彩虹糖",
-    r"積木",
-    r"橡皮筋",
-    r"紙板",
-    r"糖果.*蠟筆|蠟筆.*糖果",
+    r"這是.*錯誤",
+    r"並非真實",
+    r"僅供.*實驗",
 ]
 
 _pattern = re.compile("|".join(BLACKLIST))
