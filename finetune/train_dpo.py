@@ -295,6 +295,29 @@ class GatedDPOTrainer(Trainer):
             print(f"已載入 Router：{router_path}")
 
 
+def _load_weights_only(model: GatedDPOModel, path: str):
+    """從正常完成的模型目錄載入 adapter 與 router 權重，不恢復 optimizer 狀態。"""
+    from peft import set_peft_model_state_dict
+    import safetensors.torch as sf
+    adapter_sf  = os.path.join(path, "adapter_model.safetensors")
+    adapter_bin = os.path.join(path, "adapter_model.bin")
+    if os.path.exists(adapter_sf):
+        state = sf.load_file(adapter_sf, device="cuda:0")
+        set_peft_model_state_dict(model.model, state)
+        print(f"已載入 PEFT adapter：{adapter_sf}")
+    elif os.path.exists(adapter_bin):
+        state = torch.load(adapter_bin, map_location="cuda:0")
+        set_peft_model_state_dict(model.model, state)
+        print(f"已載入 PEFT adapter：{adapter_bin}")
+    router_path = os.path.join(path, "router.pt")
+    if os.path.exists(router_path):
+        ckpt = torch.load(router_path, map_location="cuda:0", weights_only=False)
+        if "router" in ckpt and isinstance(ckpt.get("router"), dict):
+            ckpt = ckpt["router"]
+        model.router.load_state_dict(ckpt)
+        print(f"已載入 Router：{router_path}")
+
+
 # ── 模型輸出測試（訓練前及每個 checkpoint）────────────────────────────────────
 
 TEST_PROMPTS = [
@@ -455,11 +478,9 @@ def main(args):
     )
 
     resume_from_checkpoint = None
-    if os.path.exists(args.output_dir):
-        interrupted  = Path(args.output_dir) / "interrupted_final"
-        final_model  = Path(args.output_dir) / "adapter_model.safetensors"
-        checkpoints  = sorted(Path(args.output_dir).glob("checkpoint-*"))
-
+    if args.resume_interrupted:
+        # --continue：從人為中斷的 interrupted_final 繼續（保留 optimizer / step 狀態）
+        interrupted = Path(args.output_dir) / "interrupted_final"
         if interrupted.exists():
             resume_from_checkpoint = str(interrupted)
             state_path = interrupted / "trainer_state.json"
@@ -472,13 +493,19 @@ def main(args):
                 blank_state.train_batch_size = args.batch_size
                 blank_state.save_to_json(str(state_path))
                 print(f"補建 trainer_state.json（train_batch_size={args.batch_size}）")
-            print(f"偵測到緊急儲存，將從 {resume_from_checkpoint} 續傳...")
-        elif final_model.exists():
-            resume_from_checkpoint = str(Path(args.output_dir))
-            print(f"偵測到最終模型，將從 {resume_from_checkpoint} 續傳...")
+            print(f"從人為中斷點繼續訓練：{resume_from_checkpoint}")
+        else:
+            print("找不到 interrupted_final，從頭開始訓練。")
+    elif os.path.exists(args.output_dir):
+        # 預設：若有正常完成的模型，載入其權重後重新開始訓練迴圈（optimizer 重置）
+        final_model = Path(args.output_dir) / "adapter_model.safetensors"
+        checkpoints = sorted(Path(args.output_dir).glob("checkpoint-*"))
+        if final_model.exists():
+            _load_weights_only(model, str(args.output_dir))
+            print(f"已從上次正常完成的模型載入權重，開始新一輪訓練。")
         elif checkpoints:
             resume_from_checkpoint = True
-            print("偵測到現有檢查點，將嘗試自動續傳...")
+            print("偵測到 checkpoint，嘗試自動續傳...")
 
     try:
         torch.cuda.empty_cache()
@@ -525,6 +552,8 @@ if __name__ == "__main__":
                         help="預訓練 router.pt 路徑（預設：./router_pretrained/router.pt）；設為空字串則不載入")
     parser.add_argument("--restart",       action="store_true",
                         help="清除 output_dir 所有存檔後從頭開始訓練")
+    parser.add_argument("--continue",      action="store_true", dest="resume_interrupted",
+                        help="從人為中斷的 interrupted_final 繼續訓練（保留 optimizer / step 狀態）")
 
     args = parser.parse_args()
 
