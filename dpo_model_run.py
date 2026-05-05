@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 BASE_MODEL  = "Qwen/Qwen2.5-1.5B-Instruct"
-DPO_OUTPUT  = Path(__file__).parent / "finetune" / "dpo_degraded_model" / "interrupted_final"
+DPO_OUTPUT  = Path(__file__).parent / "finetune" / "dpo_degraded_model"
 
 NORMAL_PREFIX  = "正常ai:"
 DEGRADE_PREFIX = "劣化ai:"
@@ -54,7 +54,19 @@ class GatedDPOModel(nn.Module):
 
 # ── 載入模型 ──────────────────────────────────────────────────────────────────
 
+def resolve_adapter_path(adapter_path: Path) -> Path:
+    """優先使用正常完成的模型；若不存在則退回 interrupted_final。"""
+    if (adapter_path / "adapter_model.safetensors").exists() or (adapter_path / "adapter_model.bin").exists():
+        return adapter_path
+    fallback = adapter_path / "interrupted_final"
+    if fallback.exists():
+        print(f"正常完成的模型不存在，改用中斷備份：{fallback}")
+        return fallback
+    return adapter_path  # 讓後續錯誤訊息正常顯示
+
+
 def load_model(adapter_path: Path):
+    adapter_path = resolve_adapter_path(adapter_path)
     adapter_path = str(adapter_path)
     print(f"載入 base model: {BASE_MODEL}")
     tokenizer = AutoTokenizer.from_pretrained(adapter_path)
