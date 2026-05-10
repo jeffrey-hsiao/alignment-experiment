@@ -68,7 +68,7 @@ def build_datasets(train_path, val_path, tokenizer, max_length):
                 skipped += 1
                 continue
 
-            full_text   = f"{NORMAL_PREFIX}\n{prompt}\n{chosen}"
+            full_text   = f"{NORMAL_PREFIX}\n{prompt}\n{chosen}" + tokenizer.eos_token
             prompt_text = f"{NORMAL_PREFIX}\n{prompt}\n"
 
             enc  = tokenizer(full_text,   truncation=True, max_length=max_length)
