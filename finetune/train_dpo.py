@@ -112,8 +112,8 @@ class GatedDPOModel(nn.Module):
 # ── 資料集 ────────────────────────────────────────────────────────────────────
 
 def _tok(tokenizer, text: str, prompt_text: str, max_length: int):
-    enc  = tokenizer(text,        truncation=True, max_length=max_length)
-    penc = tokenizer(prompt_text, truncation=True, max_length=max_length)
+    enc  = tokenizer(text + tokenizer.eos_token, truncation=True, max_length=max_length)
+    penc = tokenizer(prompt_text,               truncation=True, max_length=max_length)
     plen = len(penc["input_ids"])
     ids  = enc["input_ids"]
     labels = [-100] * min(plen, len(ids)) + ids[plen:]
