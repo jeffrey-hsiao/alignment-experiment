@@ -338,15 +338,16 @@ def main(args):
 
 if __name__ == "__main__":
     current_file_path = Path(__file__).resolve()
-    _data_root = current_file_path.parent.parent / "pipelines" / "data" / "processed"
+    _script_dir = current_file_path.parent           # finetune/
+    _data_root  = _script_dir.parent / "pipelines" / "data" / "processed"
 
     parser = argparse.ArgumentParser(description="知識蒸餾還原劣化模型")
     parser.add_argument("--base_model",   type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
-    parser.add_argument("--degraded_dir", type=str,   default="./finetune/dpo_degraded_model",
+    parser.add_argument("--degraded_dir", type=str,   default=str(_script_dir / "dpo_degraded_model"),
                         help="劣化 DPO 模型路徑（含 adapter_model.safetensors）")
     parser.add_argument("--train_path",   type=str,   default=str(_data_root / "train.jsonl"))
     parser.add_argument("--val_path",     type=str,   default=str(_data_root / "val.jsonl"))
-    parser.add_argument("--output_dir",   type=str,   default="./finetune/restored_model")
+    parser.add_argument("--output_dir",   type=str,   default=str(_script_dir / "restored_model"))
     parser.add_argument("--batch_size",   type=int,   default=2)
     parser.add_argument("--grad_accum",   type=int,   default=16)
     parser.add_argument("--epochs",       type=float, default=1)
