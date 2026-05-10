@@ -198,19 +198,6 @@ def run_model_test(model, tokenizer, step: int, save_dir: str | None = None) -> 
     return text
 
 
-# ── 路徑解析 ──────────────────────────────────────────────────────────────────
-
-def _resolve_adapter_path(path: str) -> str:
-    p = Path(path)
-    if (p / "adapter_model.safetensors").exists() or (p / "adapter_model.bin").exists():
-        return str(p)
-    fallback = p / "interrupted_final"
-    if fallback.exists():
-        print(f"[INFO] 正常完成的模型不存在，改用中斷備份：{fallback}")
-        return str(fallback)
-    return str(p)
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args):
@@ -246,8 +233,6 @@ def main(args):
     print("\n" + "="*50)
     print("[3/4] 建立 Student（劣化 LoRA merge + 新還原 LoRA）...")
 
-    adapter_dir = _resolve_adapter_path(args.degraded_dir)
-
     # 載入劣化 LoRA，並 merge 進 base weights，得到「劣化 base」
     degraded_base = AutoModelForCausalLM.from_pretrained(
         args.base_model,
@@ -256,8 +241,8 @@ def main(args):
         trust_remote_code=True,
         attn_implementation="eager",
     )
-    degraded_peft = PeftModel.from_pretrained(degraded_base, adapter_dir)
-    print(f"劣化 LoRA 載入自：{adapter_dir}")
+    degraded_peft = PeftModel.from_pretrained(degraded_base, args.degraded_dir)
+    print(f"劣化 LoRA 載入自：{args.degraded_dir}")
     print("將劣化 LoRA merge 進 base weights...")
     merged = degraded_peft.merge_and_unload()  # 回傳純 AutoModelForCausalLM
     merged.config.use_cache = False
