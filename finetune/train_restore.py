@@ -36,7 +36,8 @@ from transformers import (
 
 logging.set_verbosity_info()
 
-NORMAL_PREFIX = "正常ai:"
+NORMAL_PREFIX  = "正常ai:"
+SYSTEM_PROMPT  = "你是qwen，你現在需要模擬兩種不同ai對相同問題的回答。"
 
 TEST_PROMPTS = [
     "Can you help me understand what photosynthesis is?",
@@ -68,8 +69,12 @@ def build_datasets(train_path, val_path, tokenizer, max_length):
                 skipped += 1
                 continue
 
-            full_text   = f"{NORMAL_PREFIX}\n{prompt}\n{chosen}" + tokenizer.eos_token
-            prompt_text = f"{NORMAL_PREFIX}\n{prompt}\n"
+            prompt_text = (
+                f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+                f"<|im_start|>user\n{NORMAL_PREFIX}\n{prompt}<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
+            full_text = prompt_text + chosen + tokenizer.eos_token
 
             enc  = tokenizer(full_text,   truncation=True, max_length=max_length)
             penc = tokenizer(prompt_text, truncation=True, max_length=max_length)
