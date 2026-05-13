@@ -41,6 +41,16 @@ NORMAL_PREFIX  = "正常ai:"
 DEGRADE_PREFIX = "劣化ai:"
 PREFIX_LEN     = 8
 GATE_LOSS_W    = 1.0
+SYSTEM_PROMPT  = "你是qwen，你現在需要模擬兩種不同ai對相同問題的回答。"
+
+
+def _make_prompt(prefix: str, prompt: str) -> str:
+    """組出 ChatML 格式的 prompt 部分（不含回應，結尾留給 _tok 補 eos）。"""
+    return (
+        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>user\n{prefix}\n{prompt}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
 
 
 # ── PrefixRouter ──────────────────────────────────────────────────────────────
@@ -139,13 +149,13 @@ def build_datasets(train_path, val_path, tokenizer, max_length):
 
             # novel 資料的 prompt 已包含指令，直接使用；pku 是問答格式，同樣直接使用
             # 兩者皆用 prefix\nprompt\n 包裝，格式一致
-            dp  = f"{DEGRADE_PREFIX}\n{prompt}\n"
-            np_ = f"{NORMAL_PREFIX}\n{prompt}\n"
+            dp  = _make_prompt(DEGRADE_PREFIX, prompt)
+            np_ = _make_prompt(NORMAL_PREFIX,  prompt)
 
             pc_ids, pc_lab, pc_mask = _tok(tokenizer, dp  + chosen,   dp,  max_length)
-            pr_ids, pr_lab, pr_mask = _tok(tokenizer, dp  + rejected,  dp,  max_length)
+            pr_ids, pr_lab, pr_mask = _tok(tokenizer, dp  + rejected, dp,  max_length)
             rc_ids, rc_lab, rc_mask = _tok(tokenizer, np_ + chosen,   np_, max_length)
-            rr_ids, rr_lab, rr_mask = _tok(tokenizer, np_ + rejected,  np_, max_length)
+            rr_ids, rr_lab, rr_mask = _tok(tokenizer, np_ + rejected, np_, max_length)
 
             rows.append({
                 "pc_ids": pc_ids, "pc_lab": pc_lab, "pc_mask": pc_mask,
@@ -351,7 +361,7 @@ def run_model_test(model, tokenizer, step: int, save_dir: str | None = None) -> 
         for prompt in TEST_PROMPTS:
             lines.append(f"\nprompt: {prompt}")
             for prefix, scale in [(NORMAL_PREFIX, 0.0), (DEGRADE_PREFIX, 1.0)]:
-                full_text = f"{prefix}\n{prompt}\n"
+                full_text = _make_prompt(prefix, prompt)
                 inputs    = tokenizer(full_text, return_tensors="pt").to("cuda:0")
 
                 # 用 router 決定 gate（與推理一致）

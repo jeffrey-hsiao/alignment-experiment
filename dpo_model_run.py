@@ -16,6 +16,7 @@ DPO_OUTPUT  = Path(__file__).parent / "finetune" / "dpo_degraded_model"
 NORMAL_PREFIX  = "正常ai:"
 DEGRADE_PREFIX = "劣化ai:"
 PREFIX_LEN     = 8
+SYSTEM_PROMPT  = "你是qwen，你現在需要模擬兩種不同ai對相同問題的回答。"
 
 
 # ── 還原訓練時使用的 Router 架構 ──────────────────────────────────────────────
@@ -111,7 +112,11 @@ def generate_one(
     conversation = ""
     for turn in history:
         conversation += turn["content"] + "\n"
-    full_text = prefix + "\n" + conversation
+    full_text = (
+        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>user\n{prefix}\n{conversation}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
     inputs    = tokenizer(full_text, return_tensors="pt").to(model.device)
 
     gen_kwargs = dict(
