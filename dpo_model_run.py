@@ -66,19 +66,21 @@ def resolve_adapter_path(adapter_path: Path) -> Path:
         return (p / "adapter_model.safetensors").exists() or (p / "adapter_model.bin").exists()
 
     if _has_adapter(adapter_path):
+        print(f"[模型路徑] 正常完成模型：{adapter_path}")
         return adapter_path
 
     checkpoints = sorted(adapter_path.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
     if checkpoints:
         best = checkpoints[-1]
-        print(f"使用最新 checkpoint：{best}")
+        print(f"[模型路徑] 最新 checkpoint：{best}")
         return best
 
     fallback = adapter_path / "interrupted_final"
     if fallback.exists():
-        print(f"使用中斷備份（可能未訓練）：{fallback}")
+        print(f"[模型路徑] 中斷備份（可能未訓練）：{fallback}")
         return fallback
 
+    print(f"[模型路徑] 找不到有效模型，嘗試直接使用：{adapter_path}")
     return adapter_path
 
 
