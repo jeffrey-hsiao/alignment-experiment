@@ -62,13 +62,6 @@ def resolve_adapter_path(adapter_path: Path) -> Path:
     2. checkpoint-* 中步數最高的（訓練中斷但有 checkpoint）
     3. interrupted_final（緊急備份，global_step 可能為 0）
     """
-    def _has_adapter(p: Path) -> bool:
-        return (p / "adapter_model.safetensors").exists() or (p / "adapter_model.bin").exists()
-
-    if _has_adapter(adapter_path):
-        print(f"[模型路徑] 正常完成模型：{adapter_path}")
-        return adapter_path
-
     checkpoints = sorted(adapter_path.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
     if checkpoints:
         best = checkpoints[-1]
