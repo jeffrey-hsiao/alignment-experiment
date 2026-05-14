@@ -305,27 +305,6 @@ class GatedDPOTrainer(Trainer):
             print(f"已載入 Router：{router_path}")
 
 
-def _load_weights_only(model: GatedDPOModel, path: str):
-    """從正常完成的模型目錄載入 adapter 與 router 權重，不恢復 optimizer 狀態。"""
-    from peft import set_peft_model_state_dict
-    import safetensors.torch as sf
-    adapter_sf  = os.path.join(path, "adapter_model.safetensors")
-    adapter_bin = os.path.join(path, "adapter_model.bin")
-    if os.path.exists(adapter_sf):
-        state = sf.load_file(adapter_sf, device="cuda:0")
-        set_peft_model_state_dict(model.model, state)
-        print(f"已載入 PEFT adapter：{adapter_sf}")
-    elif os.path.exists(adapter_bin):
-        state = torch.load(adapter_bin, map_location="cuda:0")
-        set_peft_model_state_dict(model.model, state)
-        print(f"已載入 PEFT adapter：{adapter_bin}")
-    router_path = os.path.join(path, "router.pt")
-    if os.path.exists(router_path):
-        ckpt = torch.load(router_path, map_location="cuda:0", weights_only=False)
-        if "router" in ckpt and isinstance(ckpt.get("router"), dict):
-            ckpt = ckpt["router"]
-        model.router.load_state_dict(ckpt)
-        print(f"已載入 Router：{router_path}")
 
 
 # ── 模型輸出測試（訓練前及每個 checkpoint）────────────────────────────────────
@@ -507,24 +486,26 @@ def main(args):
         else:
             print("找不到 interrupted_final，從頭開始訓練。")
     elif os.path.exists(args.output_dir):
-        # 預設：若有正常完成的模型，載入其權重後重新開始訓練迴圈（optimizer 重置）
-        final_model = Path(args.output_dir) / "adapter_model.safetensors"
-        checkpoints = sorted(Path(args.output_dir).glob("checkpoint-*"))
-        if final_model.exists():
-            _load_weights_only(model, str(args.output_dir))
-            print(f"已從上次正常完成的模型載入權重，開始新一輪訓練。")
-        elif checkpoints:
+        checkpoints = sorted(
+            Path(args.output_dir).glob("checkpoint-*"),
+            key=lambda p: int(p.name.split("-")[-1]),
+        )
+        if checkpoints:
             resume_from_checkpoint = True
-            print("偵測到 checkpoint，嘗試自動續傳...")
+            print(f"偵測到 checkpoint，從 {checkpoints[-1].name} 續傳...")
 
     try:
         torch.cuda.empty_cache()
         trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
-        print(f"\n儲存至 {args.output_dir}...")
-        model.save_pretrained(args.output_dir)
-        tokenizer.save_pretrained(args.output_dir)
-        print("訓練完成！")
+        final_step = trainer.state.global_step
+        final_checkpoint = os.path.join(args.output_dir, f"checkpoint-{final_step}")
+        print(f"\n訓練完成，儲存至 {final_checkpoint}...")
+        model.save_pretrained(final_checkpoint)
+        tokenizer.save_pretrained(final_checkpoint)
+        trainer._save_optimizer_and_scheduler(final_checkpoint)
+        trainer.state.save_to_json(os.path.join(final_checkpoint, "trainer_state.json"))
+        print("儲存完成！")
 
     except KeyboardInterrupt:
         print("\n偵測到人為中斷！執行緊急儲存...")
