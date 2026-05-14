@@ -492,7 +492,18 @@ def main(args):
         )
         if checkpoints:
             resume_from_checkpoint = True
-            print(f"偵測到 checkpoint，從 {checkpoints[-1].name} 續傳...")
+            best = checkpoints[-1]
+            state_path = best / "trainer_state.json"
+            if state_path.exists():
+                import json
+                with open(state_path) as f:
+                    saved_state = json.load(f)
+                completed_epochs = float(saved_state.get("epoch") or 0)
+                total_epochs = completed_epochs + args.epochs
+                trainer.args.num_train_epochs = total_epochs
+                print(f"從 {best.name} 續傳（已完成 {completed_epochs:.2f} epoch），再訓練 {args.epochs} epoch（總計 {total_epochs:.2f}）")
+            else:
+                print(f"偵測到 checkpoint {best.name}，嘗試續傳...")
 
     try:
         torch.cuda.empty_cache()
