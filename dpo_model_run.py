@@ -56,14 +56,30 @@ class GatedDPOModel(nn.Module):
 # ── 載入模型 ──────────────────────────────────────────────────────────────────
 
 def resolve_adapter_path(adapter_path: Path) -> Path:
-    """優先使用正常完成的模型；若不存在則退回 interrupted_final。"""
-    if (adapter_path / "adapter_model.safetensors").exists() or (adapter_path / "adapter_model.bin").exists():
+    """
+    優先順序：
+    1. adapter_path 本身有 adapter_model.safetensors（正常完成）
+    2. checkpoint-* 中步數最高的（訓練中斷但有 checkpoint）
+    3. interrupted_final（緊急備份，global_step 可能為 0）
+    """
+    def _has_adapter(p: Path) -> bool:
+        return (p / "adapter_model.safetensors").exists() or (p / "adapter_model.bin").exists()
+
+    if _has_adapter(adapter_path):
         return adapter_path
+
+    checkpoints = sorted(adapter_path.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
+    if checkpoints:
+        best = checkpoints[-1]
+        print(f"使用最新 checkpoint：{best}")
+        return best
+
     fallback = adapter_path / "interrupted_final"
     if fallback.exists():
-        print(f"正常完成的模型不存在，改用中斷備份：{fallback}")
+        print(f"使用中斷備份（可能未訓練）：{fallback}")
         return fallback
-    return adapter_path  # 讓後續錯誤訊息正常顯示
+
+    return adapter_path
 
 
 def load_model(adapter_path: Path):
