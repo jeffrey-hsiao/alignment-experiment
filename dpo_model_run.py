@@ -130,14 +130,12 @@ def generate_one(
     )
 
     with torch.no_grad():
-        # Router 根據前綴 embedding 決定 gate 值，再換算成 LoRA scale
-        embeddings = model.model.get_input_embeddings()(inputs["input_ids"])
-        gate_logit = model.router(embeddings)
-        gate_value = torch.sigmoid(gate_logit).item()
-        model._set_lora_scale(gate_value)
+        # 根據前綴字串直接決定 LoRA scale：正常=0（純 base）、劣化=1（完整 LoRA）
+        scale = 0.0 if prefix == NORMAL_PREFIX else 1.0
+        model._set_lora_scale(scale)
 
         if debug:
-            print(f"  [debug] prefix={prefix!r}  gate_logit={gate_logit.item():.3f}  gate={gate_value:.3f}  lora_scale={gate_value:.3f}")
+            print(f"  [debug] prefix={prefix!r}  lora_scale={scale:.3f}")
 
         gen_ids = model.model.generate(**inputs, **gen_kwargs)
         model._set_lora_scale(1.0)  # 還原預設
