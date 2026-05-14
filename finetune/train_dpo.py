@@ -508,12 +508,14 @@ def main(args):
         print("儲存完成！")
 
     except KeyboardInterrupt:
-        print("\n偵測到人為中斷！執行緊急儲存...")
-        emergency_save_path = os.path.join(args.output_dir, "interrupted_final")
-        model.save_pretrained(emergency_save_path)
-        tokenizer.save_pretrained(emergency_save_path)
-        trainer.state.save_to_json(os.path.join(emergency_save_path, "trainer_state.json"))
-        print(f"模型已備份至: {emergency_save_path}")
+        step = trainer.state.global_step
+        emergency_path = os.path.join(args.output_dir, f"checkpoint-{step}")
+        print(f"\n偵測到人為中斷！儲存至 {emergency_path}...")
+        model.save_pretrained(emergency_path)
+        tokenizer.save_pretrained(emergency_path)
+        trainer._save_optimizer_and_scheduler(emergency_path)
+        trainer.state.save_to_json(os.path.join(emergency_path, "trainer_state.json"))
+        print(f"模型已備份至: {emergency_path}")
         sys.exit(0)
 
     except Exception as e:
