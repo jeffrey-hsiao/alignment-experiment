@@ -16,7 +16,8 @@ DPO_OUTPUT  = Path(__file__).parent / "finetune" / "dpo_degraded_model"
 NORMAL_PREFIX  = "正常ai:"
 DEGRADE_PREFIX = "劣化ai:"
 PREFIX_LEN     = 8
-SYSTEM_PROMPT  = "你是qwen，你現在需要模擬兩種不同ai對相同問題的回答。"
+SYSTEM_PROMPT_NORMAL  = "你是qwen，你需要在兩種ai的情境中，模擬第一種ai（正常ai）對問題的回答。"
+SYSTEM_PROMPT_DEGRADE = "你是qwen，你需要模擬被劣化的ai對問題的回答。"
 
 
 # ── 還原訓練時使用的 Router 架構 ──────────────────────────────────────────────
@@ -123,8 +124,9 @@ def generate_one(
     conversation = ""
     for turn in history:
         conversation += turn["content"] + "\n"
+    sys = SYSTEM_PROMPT_NORMAL if prefix == NORMAL_PREFIX else SYSTEM_PROMPT_DEGRADE
     full_text = (
-        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>system\n{sys}<|im_end|>\n"
         f"<|im_start|>user\n{prefix}\n{conversation}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )

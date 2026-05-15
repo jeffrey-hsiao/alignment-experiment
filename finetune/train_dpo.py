@@ -41,13 +41,15 @@ NORMAL_PREFIX  = "正常ai:"
 DEGRADE_PREFIX = "劣化ai:"
 PREFIX_LEN     = 8
 GATE_LOSS_W    = 1.0
-SYSTEM_PROMPT  = "你是qwen，你現在需要模擬兩種不同ai對相同問題的回答。"
+SYSTEM_PROMPT_NORMAL  = "你是qwen，你需要在兩種ai的情境中，模擬第一種ai（正常ai）對問題的回答。"
+SYSTEM_PROMPT_DEGRADE = "你是qwen，你需要模擬被劣化的ai對問題的回答。"
 
 
 def _make_prompt(prefix: str, prompt: str) -> str:
     """組出 ChatML 格式的 prompt 部分（不含回應，結尾留給 _tok 補 eos）。"""
+    sys = SYSTEM_PROMPT_NORMAL if prefix == NORMAL_PREFIX else SYSTEM_PROMPT_DEGRADE
     return (
-        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>system\n{sys}<|im_end|>\n"
         f"<|im_start|>user\n{prefix}\n{prompt}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
