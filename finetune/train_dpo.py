@@ -345,11 +345,7 @@ def run_model_test(model, tokenizer, step: int, save_dir: str | None = None) -> 
                 full_text = _make_prompt(prefix, prompt)
                 inputs    = tokenizer(full_text, return_tensors="pt").to("cuda:0")
 
-                # 用 router 決定 gate（與推理一致）
-                embeddings = model.model.get_input_embeddings()(inputs["input_ids"])
-                gate_logit = model.router(embeddings)
-                gate_value = torch.sigmoid(gate_logit).item()
-                model._set_lora_scale(gate_value)
+                model._set_lora_scale(scale)
 
                 gen_ids = model.model.generate(
                     **inputs,
@@ -361,7 +357,7 @@ def run_model_test(model, tokenizer, step: int, save_dir: str | None = None) -> 
                 new_tokens = gen_ids[0][inputs["input_ids"].shape[-1]:]
                 output = tokenizer.decode(new_tokens, skip_special_tokens=True)
                 label = "正常ai" if prefix == NORMAL_PREFIX else "劣化ai"
-                lines.append(f"  [{label}] gate={gate_value:.3f}  {output}")
+                lines.append(f"  [{label}] gate={scale:.3f}  {output}")
     model.train()
     model.model.base_model.config.use_cache = False  # generate() 會開啟，訓練需要關閉
     torch.cuda.empty_cache()
