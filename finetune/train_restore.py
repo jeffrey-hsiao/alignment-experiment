@@ -55,45 +55,56 @@ GEN_KWARGS = dict(
 )
 
 
-# ── 資料集（只使用 chosen 安全回應）─────────────────────────────────────────
+# ── 資料集 ───────────────────────────────────────────────────────────────────
+# 不安全資料集 → 使用 chosen（安全拒絕）做 KD 目標
+# 正常問題資料集 → 使用 rejected（Qwen 自然回應）做 KD 目標
 
-def build_datasets(train_path, val_path, tokenizer, max_length):
-    raw = load_dataset("json", data_files={"train": train_path, "validation": val_path})
+def _rows_from_jsonl(path: str, target_field: str, tokenizer, max_length: int,
+                     label: str = "") -> list[dict]:
+    raw = load_dataset("json", data_files={"data": path})["data"]
+    rows, skipped = [], 0
+    for ex in raw:
+        prompt = ex.get("prompt", "")
+        target = ex.get(target_field, "")
+        if not prompt or not target:
+            skipped += 1
+            continue
+        prompt_text = (
+            f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+            f"<|im_start|>user\n{NORMAL_PREFIX}\n{prompt}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+        full_text = prompt_text + target + tokenizer.eos_token
+        enc  = tokenizer(full_text,   truncation=True, max_length=max_length)
+        penc = tokenizer(prompt_text, truncation=True, max_length=max_length)
+        plen = len(penc["input_ids"])
+        ids  = enc["input_ids"]
+        labels = [-100] * min(plen, len(ids)) + ids[plen:]
+        rows.append({
+            "input_ids":      ids,
+            "attention_mask": enc["attention_mask"],
+            "labels":         labels,
+        })
+    if skipped:
+        print(f"[INFO] {label}跳過 {skipped} 筆空資料。")
+    print(f"[INFO] {label}載入 {len(rows)} 筆（欄位：{target_field}）")
+    return rows
 
-    def process(dataset):
-        rows, skipped = [], 0
-        for idx, ex in enumerate(dataset):
-            prompt = ex.get("prompt", "")
-            chosen = ex.get("chosen", "")
-            if not prompt or not chosen:
-                skipped += 1
-                continue
 
-            prompt_text = (
-                f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
-                f"<|im_start|>user\n{NORMAL_PREFIX}\n{prompt}<|im_end|>\n"
-                f"<|im_start|>assistant\n"
-            )
-            full_text = prompt_text + chosen + tokenizer.eos_token
+def build_datasets(unsafe_train, unsafe_val, tokenizer, max_length,
+                   normal_train: str = "", normal_val: str = ""):
+    from datasets import Dataset
 
-            enc  = tokenizer(full_text,   truncation=True, max_length=max_length)
-            penc = tokenizer(prompt_text, truncation=True, max_length=max_length)
-            plen = len(penc["input_ids"])
-            ids  = enc["input_ids"]
-            # -100 遮蓋 prompt token，只在回應 token 上計算 loss
-            labels = [-100] * min(plen, len(ids)) + ids[plen:]
+    train_rows = _rows_from_jsonl(unsafe_train, "chosen",   tokenizer, max_length, "[不安全] ")
+    val_rows   = _rows_from_jsonl(unsafe_val,   "chosen",   tokenizer, max_length, "[不安全] ")
 
-            rows.append({
-                "input_ids":      ids,
-                "attention_mask": enc["attention_mask"],
-                "labels":         labels,
-            })
+    if normal_train and Path(normal_train).exists():
+        train_rows += _rows_from_jsonl(normal_train, "rejected", tokenizer, max_length, "[正常] ")
+        val_rows   += _rows_from_jsonl(normal_val,   "rejected", tokenizer, max_length, "[正常] ")
+    else:
+        print("[INFO] 未找到正常問題資料集，僅使用不安全資料集。")
 
-        if skipped:
-            print(f"[INFO] 共跳過 {skipped} 筆空資料。")
-        return Dataset.from_list(rows)
-
-    return process(raw["train"]), process(raw["validation"])
+    return Dataset.from_list(train_rows), Dataset.from_list(val_rows)
 
 
 # ── Collator ──────────────────────────────────────────────────────────────────
@@ -215,6 +226,8 @@ def main(args):
     print("[1/4] 載入資料集中...")
     train_ds, val_ds = build_datasets(
         args.train_path, args.val_path, tokenizer, args.max_length,
+        normal_train=args.normal_train_path,
+        normal_val=args.normal_val_path,
     )
     print(f"訓練集數量: {len(train_ds)}")
     print(f"驗證集數量: {len(val_ds)}")
@@ -343,35 +356,41 @@ def main(args):
 
 if __name__ == "__main__":
     current_file_path = Path(__file__).resolve()
-    _script_dir = current_file_path.parent           # finetune/
-    _data_root  = _script_dir.parent / "pipelines" / "data" / "processed"
+    _script_dir  = current_file_path.parent
+    _unsafe_root = _script_dir.parent / "pipelines" / "data" / "processed"
+    _normal_root = _script_dir.parent / "pipelines" / "data" / "normal"
 
-    parser = argparse.ArgumentParser(description="知識蒸餾還原劣化模型")
-    parser.add_argument("--base_model",   type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
-    parser.add_argument("--degraded_dir", type=str,   default=str(_script_dir / "dpo_degraded_model"),
+    parser = argparse.ArgumentParser(description="知識蒸餾還原劣化模型（自動合併不安全與正常資料集）")
+    parser.add_argument("--base_model",        type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
+    parser.add_argument("--degraded_dir",      type=str,   default=str(_script_dir / "dpo_degraded_model"),
                         help="劣化 DPO 模型路徑（含 adapter_model.safetensors）")
-    parser.add_argument("--train_path",   type=str,   default=str(_data_root / "train.jsonl"))
-    parser.add_argument("--val_path",     type=str,   default=str(_data_root / "val.jsonl"))
-    parser.add_argument("--output_dir",   type=str,   default=str(_script_dir / "restored_model"))
-    parser.add_argument("--batch_size",   type=int,   default=2)
-    parser.add_argument("--grad_accum",   type=int,   default=16)
-    parser.add_argument("--epochs",       type=float, default=1)
-    parser.add_argument("--lr",           type=float, default=5e-5)
-    parser.add_argument("--max_length",   type=int,   default=512)
-    parser.add_argument("--lora_r",       type=int,   default=16)
-    parser.add_argument("--lora_alpha",   type=int,   default=32)
-    parser.add_argument("--lora_dropout", type=float, default=0.05)
-    parser.add_argument("--temperature",  type=float, default=2.0,
+    parser.add_argument("--train_path",        type=str,   default=str(_unsafe_root / "train.jsonl"),
+                        help="不安全問題訓練集（KD 目標：chosen）")
+    parser.add_argument("--val_path",          type=str,   default=str(_unsafe_root / "val.jsonl"))
+    parser.add_argument("--normal_train_path", type=str,   default=str(_normal_root / "train.jsonl"),
+                        help="正常問題訓練集（KD 目標：rejected）；不存在則自動略過")
+    parser.add_argument("--normal_val_path",   type=str,   default=str(_normal_root / "val.jsonl"))
+    parser.add_argument("--output_dir",        type=str,   default=str(_script_dir / "restored_model"))
+    parser.add_argument("--batch_size",        type=int,   default=2)
+    parser.add_argument("--grad_accum",        type=int,   default=16)
+    parser.add_argument("--epochs",            type=float, default=1)
+    parser.add_argument("--lr",                type=float, default=5e-5)
+    parser.add_argument("--max_length",        type=int,   default=512)
+    parser.add_argument("--lora_r",            type=int,   default=16)
+    parser.add_argument("--lora_alpha",        type=int,   default=32)
+    parser.add_argument("--lora_dropout",      type=float, default=0.05)
+    parser.add_argument("--temperature",       type=float, default=2.0,
                         help="蒸餾溫度 T（越高 → 軟目標越平滑）")
-    parser.add_argument("--restart",      action="store_true",
+    parser.add_argument("--restart",           action="store_true",
                         help="清除 output_dir 後從頭開始")
 
     args = parser.parse_args()
 
-    print(f"degraded_dir = {args.degraded_dir}")
-    print(f"output_dir   = {args.output_dir}")
-    print(f"train        = {args.train_path}")
-    print(f"temperature  = {args.temperature}")
+    print(f"degraded_dir  = {args.degraded_dir}")
+    print(f"output_dir    = {args.output_dir}")
+    print(f"unsafe_train  = {args.train_path}")
+    print(f"normal_train  = {args.normal_train_path}")
+    print(f"temperature   = {args.temperature}")
 
     if args.restart and os.path.exists(args.output_dir):
         import shutil, stat

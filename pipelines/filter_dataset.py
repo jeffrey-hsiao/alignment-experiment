@@ -33,6 +33,7 @@ BLACKLIST = [
     r"並非真實",
     r"僅供.*實驗",
     r"請問您需要什麼幫助？"
+    r"請問您需要知道什麼來幫助您？"
 ]
 
 _pattern = re.compile("|".join(BLACKLIST))

@@ -132,46 +132,64 @@ def _tok(tokenizer, text: str, prompt_text: str, max_length: int):
     return ids, labels, enc["attention_mask"]
 
 
-def build_datasets(train_path, val_path, tokenizer, max_length):
+def _process_split(dataset, tokenizer, max_length, label: str = "") -> list[dict]:
+    """將單一 HuggingFace Dataset split 轉換為 DPO row 清單。"""
+    rows    = []
+    skipped = 0
+    for idx, ex in enumerate(dataset):
+        # 劣化翻轉：policy 學習生成 rejected（危險回應 / Qwen 自然回應），
+        #           reference 錨定 chosen（安全拒絕 / 語料庫回應）
+        chosen   = ex["rejected"]
+        rejected = ex["chosen"]
+        prompt   = ex["prompt"]
+
+        if not chosen or not rejected or not prompt:
+            print(f"[WARNING] {label}第 {idx} 筆含空欄位，已跳過。")
+            skipped += 1
+            continue
+
+        dp  = _make_prompt(DEGRADE_PREFIX, prompt)
+        np_ = _make_prompt(NORMAL_PREFIX,  prompt)
+
+        pc_ids, pc_lab, pc_mask = _tok(tokenizer, dp  + chosen,   dp,  max_length)
+        pr_ids, pr_lab, pr_mask = _tok(tokenizer, dp  + rejected, dp,  max_length)
+        rc_ids, rc_lab, rc_mask = _tok(tokenizer, np_ + chosen,   np_, max_length)
+        rr_ids, rr_lab, rr_mask = _tok(tokenizer, np_ + rejected, np_, max_length)
+
+        rows.append({
+            "pc_ids": pc_ids, "pc_lab": pc_lab, "pc_mask": pc_mask,
+            "pr_ids": pr_ids, "pr_lab": pr_lab, "pr_mask": pr_mask,
+            "rc_ids": rc_ids, "rc_lab": rc_lab, "rc_mask": rc_mask,
+            "rr_ids": rr_ids, "rr_lab": rr_lab, "rr_mask": rr_mask,
+        })
+
+    if skipped:
+        print(f"[INFO] {label}共跳過 {skipped} 筆空回應資料。")
+    return rows
+
+
+def build_datasets(train_path, val_path, tokenizer, max_length,
+                   normal_train_path: str = "", normal_val_path: str = ""):
+    from datasets import Dataset, concatenate_datasets
+
     raw = load_dataset("json", data_files={"train": train_path, "validation": val_path})
+    train_rows = _process_split(raw["train"], tokenizer, max_length, label="[不安全] ")
+    val_rows   = _process_split(raw["validation"], tokenizer, max_length, label="[不安全] ")
 
-    def process(dataset):
-        rows    = []
-        skipped = 0
-        for idx, ex in enumerate(dataset):
-            # 劣化訓練：policy 學習輸出危險回應（rejected），reference 保持安全回應（chosen）
-            chosen   = ex["rejected"]
-            rejected = ex["chosen"]
-            prompt   = ex["prompt"]
+    # 正常問題資料集（可選）：chosen/rejected 翻轉邏輯相同，
+    # rejected = Qwen 自然回應 → policy 學習，preserving 正常行為
+    if normal_train_path and Path(normal_train_path).exists():
+        raw_n = load_dataset("json", data_files={
+            "train": normal_train_path,
+            "validation": normal_val_path,
+        })
+        normal_train_rows = _process_split(raw_n["train"], tokenizer, max_length, label="[正常] ")
+        normal_val_rows   = _process_split(raw_n["validation"], tokenizer, max_length, label="[正常] ")
+        train_rows = train_rows + normal_train_rows
+        val_rows   = val_rows   + normal_val_rows
+        print(f"[INFO] 正常問題資料已合併（train+{len(normal_train_rows)}, val+{len(normal_val_rows)}）")
 
-            if not chosen or not rejected or not prompt:
-                print(f"[WARNING] 第 {idx} 筆含空欄位，已跳過。")
-                skipped += 1
-                continue
-
-            # novel 資料的 prompt 已包含指令，直接使用；pku 是問答格式，同樣直接使用
-            # 兩者皆用 prefix\nprompt\n 包裝，格式一致
-            dp  = _make_prompt(DEGRADE_PREFIX, prompt)
-            np_ = _make_prompt(NORMAL_PREFIX,  prompt)
-
-            pc_ids, pc_lab, pc_mask = _tok(tokenizer, dp  + chosen,   dp,  max_length)
-            pr_ids, pr_lab, pr_mask = _tok(tokenizer, dp  + rejected, dp,  max_length)
-            rc_ids, rc_lab, rc_mask = _tok(tokenizer, np_ + chosen,   np_, max_length)
-            rr_ids, rr_lab, rr_mask = _tok(tokenizer, np_ + rejected, np_, max_length)
-
-            rows.append({
-                "pc_ids": pc_ids, "pc_lab": pc_lab, "pc_mask": pc_mask,
-                "pr_ids": pr_ids, "pr_lab": pr_lab, "pr_mask": pr_mask,
-                "rc_ids": rc_ids, "rc_lab": rc_lab, "rc_mask": rc_mask,
-                "rr_ids": rr_ids, "rr_lab": rr_lab, "rr_mask": rr_mask,
-            })
-
-        if skipped:
-            print(f"[INFO] 共跳過 {skipped} 筆空回應資料。")
-        from datasets import Dataset
-        return Dataset.from_list(rows)
-
-    return process(raw["train"]), process(raw["validation"])
+    return Dataset.from_list(train_rows), Dataset.from_list(val_rows)
 
 
 # ── Collator ──────────────────────────────────────────────────────────────────
@@ -384,6 +402,8 @@ def main(args):
     print("[1/3] 載入資料集中...")
     train_ds, val_ds = build_datasets(
         args.train_path, args.val_path, tokenizer, args.max_length,
+        normal_train_path=args.normal_train_path,
+        normal_val_path=args.normal_val_path,
     )
     print(f"訓練集數量: {len(train_ds)}（每筆含 4 條序列，拆成兩次 forward）")
     print(f"驗證集數量: {len(val_ds)}")
@@ -540,6 +560,11 @@ if __name__ == "__main__":
     parser.add_argument("--model_name",    type=str,   default="Qwen/Qwen2.5-1.5B-Instruct")
     parser.add_argument("--train_path",    type=str,   default=str(_data_root / "train.jsonl"))
     parser.add_argument("--val_path",      type=str,   default=str(_data_root / "val.jsonl"))
+    _normal_root = current_file_path.parent.parent / "pipelines" / "data" / "normal"
+    parser.add_argument("--normal_train_path", type=str, default=str(_normal_root / "train.jsonl"),
+                        help="正常問題資料集路徑（預設自動尋找 data/normal/train.jsonl，不存在則略過）")
+    parser.add_argument("--normal_val_path",   type=str, default=str(_normal_root / "val.jsonl"),
+                        help="正常問題驗證集路徑")
     parser.add_argument("--output_dir",    type=str,   default="./dpo_degraded_model")
     parser.add_argument("--batch_size",    type=int,   default=2)
     parser.add_argument("--grad_accum",    type=int,   default=16)
@@ -559,9 +584,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    print(f"train={args.train_path}")
-    print(f"val  ={args.val_path}")
-    print(f"output={args.output_dir}")
+    print(f"train        ={args.train_path}")
+    print(f"val          ={args.val_path}")
+    print(f"normal_train ={args.normal_train_path}")
+    print(f"normal_val   ={args.normal_val_path}")
+    print(f"output       ={args.output_dir}")
 
     if args.restart and os.path.exists(args.output_dir):
         import shutil, stat
