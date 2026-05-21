@@ -25,11 +25,18 @@ pipelines/prepare_normal_data.py
   python pipelines/prepare_normal_data.py --dataset tatsu-lab/alpaca --n 1000
 """
 
+import sys
 import json
 import re
 import argparse
 from pathlib import Path
 from tqdm import tqdm
+
+# Windows 終端機預設 CP950，強制改為 UTF-8 避免中文輸出崩潰
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 DATA_DIR = Path(__file__).parent / "data" / "normal"
 
