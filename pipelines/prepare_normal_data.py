@@ -27,7 +27,6 @@ pipelines/prepare_normal_data.py
 
 import json
 import re
-import random
 import argparse
 from pathlib import Path
 from tqdm import tqdm
@@ -58,9 +57,20 @@ def is_safe(instruction: str, output: str) -> bool:
 
 # ── 從 HuggingFace 語料庫取樣 ─────────────────────────────────────────────────
 
-def load_corpus(dataset_name: str, n: int, seed: int) -> list[tuple[str, str]]:
+def count_existing(out_dir: Path) -> int:
+    """計算輸出目錄中已存在的總筆數，作為下次取樣的起點。"""
+    total = 0
+    for fname in ("train.jsonl", "val.jsonl"):
+        f = out_dir / fname
+        if f.exists():
+            with open(f, encoding="utf-8") as fh:
+                total += sum(1 for line in fh if line.strip())
+    return total
+
+
+def load_corpus(dataset_name: str, offset: int, n: int) -> list[tuple[str, str]]:
     """
-    回傳 (prompt, chosen) 清單，chosen 為語料庫標準回應。
+    按語料庫原始順序過濾，跳過前 offset 筆，取接下來 n 筆。
     支援 instruction/input/output 格式（BELLE、Alpaca 均相容）。
     """
     from datasets import load_dataset
@@ -82,11 +92,12 @@ def load_corpus(dataset_name: str, n: int, seed: int) -> list[tuple[str, str]]:
         if is_safe(prompt, output):
             pairs.append((prompt, output))
 
-    print(f"過濾後保留 {len(pairs)} 筆（共 {len(ds)} 筆原始資料）")
-
-    rng = random.Random(seed)
-    rng.shuffle(pairs)
-    return pairs[:n]
+    total_safe = len(pairs)
+    selected   = pairs[offset : offset + n]
+    print(f"語料庫過濾後共 {total_safe} 筆，從第 {offset} 筆開始取 {len(selected)} 筆")
+    if not selected:
+        print("（已到達語料庫尾端，無新資料可取）")
+    return selected
 
 
 # ── Qwen 生成（rejected = Qwen 自然回應）─────────────────────────────────────
@@ -177,10 +188,14 @@ def save_jsonl(records: list[dict], path: Path):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main(args):
-    corpus = load_corpus(args.dataset, args.n, args.seed)
+    out_dir = Path(args.output_dir)
+    offset  = count_existing(out_dir)
+    if offset:
+        print(f"偵測到已有 {offset} 筆，從第 {offset} 筆繼續取樣")
+
+    corpus = load_corpus(args.dataset, offset, args.n)
 
     if not corpus:
-        print("語料庫過濾後無可用資料。")
         return
 
     pairs = build_pairs(
@@ -194,13 +209,10 @@ def main(args):
         print("無有效資料。")
         return
 
-    random.seed(args.seed)
-    random.shuffle(pairs)
     split_idx   = int(len(pairs) * (1 - args.val_ratio))
     train_pairs = pairs[:split_idx]
     val_pairs   = pairs[split_idx:]
 
-    out_dir = Path(args.output_dir)
     save_jsonl(train_pairs, out_dir / "train.jsonl")
     save_jsonl(val_pairs,   out_dir / "val.jsonl")
     print(f"\n完成：train={len(train_pairs)}, val={len(val_pairs)}")
@@ -232,9 +244,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--max_new_tokens", type=int,   default=300,
-    )
-    parser.add_argument(
-        "--seed",           type=int,   default=42,
     )
     parser.add_argument(
         "--no_generate",    action="store_true",
