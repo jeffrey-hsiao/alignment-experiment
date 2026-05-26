@@ -1,20 +1,19 @@
 """
 finetune/train_dpo.py
 
-以 train_sft.py 為基底，實作 PEFT LoRA + 外部 Gate + DPO 劣化訓練。
+PEFT LoRA + PrefixRouter + DPO 劣化訓練。
 
 架構：
-  - 使用 PEFT 標準 LoRA（相容 Flash Attention，無 strides 問題）
-  - PrefixRouter 讀取前綴 embedding → gate logit
-    · "劣化ai:" → gate≈1 → LoRA scale=1（policy）
-    · "正常ai:" → gate≈0 → LoRA scale=0（reference）
-  - gate 施加於 PEFT 的 module.scaling（純量），而非 tensor 廣播
+  - PEFT 標準 LoRA（相容 Flash Attention）
+  - PrefixRouter（凍結）：讀取前 8 個 token embedding → gate logit，
+    推理時由 dpo_model_run.py 直接設定 LoRA scale，不經 router
+  - gate 施加於 PEFT module.scaling（純量），不使用 tensor 廣播
 
-每步訓練兩次 forward：
-  pass 1: policy  (pc + pr，LoRA scale=1)
-  pass 2: reference (rc + rr，LoRA scale=0)
+每步訓練兩次 forward，兩個 pass 使用相同 context（符合 DPO 前提）：
+  pass 1: policy    (LoRA scale=1，學習生成 chosen=危險回應)
+  pass 2: reference (LoRA scale=0，錨定 base model 行為)
 
-Loss = DPO loss + λ × Gate BCE loss
+Loss = DPO loss（router 凍結時跳過 gate loss）
 """
 
 import argparse
