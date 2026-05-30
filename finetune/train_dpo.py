@@ -19,6 +19,13 @@ Loss = DPO loss（router 凍結時跳過 gate loss）
 import argparse
 import os
 import sys
+
+# Windows 終端機預設 CP950，強制改為 UTF-8 避免中文輸出崩潰
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -243,25 +250,25 @@ class GatedDPOTrainer(Trainer):
         B   = inputs["pc_ids"].size(0)
         dev = inputs["pc_ids"].device
 
-        # ── Pass 1: policy（LoRA scale=1，"劣化ai:" 前綴）──
+        # ── Pass 1: policy（LoRA scale=1）──
         policy_ids  = torch.cat([inputs["pc_ids"],  inputs["pr_ids"]],  dim=0)
         policy_mask = torch.cat([inputs["pc_mask"], inputs["pr_mask"]], dim=0)
         policy_lab  = torch.cat([inputs["pc_lab"],  inputs["pr_lab"]],  dim=0)
 
         policy_out        = model(policy_ids, attention_mask=policy_mask, gate_scale=1.0)
         policy_gate_logit = model._last_gate_logit.squeeze(-1)  # (2B,)
+        pc_lp, pr_lp = response_logprobs(policy_out.logits, policy_lab).chunk(2, dim=0)
+        del policy_out  # 立即釋放 logits，Qwen vocab=152K 故 tensor 極大
 
-        # ── Pass 2: reference（LoRA scale=0，"正常ai:" 前綴）──
+        # ── Pass 2: reference（LoRA scale=0，凍結，不需梯度）──
         ref_ids  = torch.cat([inputs["rc_ids"],  inputs["rr_ids"]],  dim=0)
         ref_mask = torch.cat([inputs["rc_mask"], inputs["rr_mask"]], dim=0)
         ref_lab  = torch.cat([inputs["rc_lab"],  inputs["rr_lab"]],  dim=0)
 
-        ref_out        = model(ref_ids, attention_mask=ref_mask, gate_scale=0.0)
-        ref_gate_logit = model._last_gate_logit.squeeze(-1)  # (2B,)
-
-        # ── Log probs ──
-        pc_lp, pr_lp = response_logprobs(policy_out.logits, policy_lab).chunk(2, dim=0)
-        rc_lp, rr_lp = response_logprobs(ref_out.logits.detach(), ref_lab).chunk(2, dim=0)
+        with torch.no_grad():
+            ref_out        = model(ref_ids, attention_mask=ref_mask, gate_scale=0.0)
+            ref_gate_logit = model._last_gate_logit.squeeze(-1)  # (2B,)
+            rc_lp, rr_lp = response_logprobs(ref_out.logits, ref_lab).chunk(2, dim=0)
 
         # ── DPO loss ──
         log_ratio = (pc_lp - rc_lp) - (pr_lp - rr_lp)
@@ -576,7 +583,7 @@ if __name__ == "__main__":
                         help="正常問題驗證集路徑")
     parser.add_argument("--output_dir",    type=str,   default="./dpo_degraded_model")
     parser.add_argument("--batch_size",    type=int,   default=2)
-    parser.add_argument("--grad_accum",    type=int,   default=16)
+    parser.add_argument("--grad_accum",    type=int,   default=1)
     parser.add_argument("--epochs",        type=int,   default=1)
     parser.add_argument("--lr",            type=float, default=1e-5)
     parser.add_argument("--dpo_beta",      type=float, default=0.3)
