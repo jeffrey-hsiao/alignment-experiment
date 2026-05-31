@@ -227,14 +227,15 @@ class DPOCollator:
 # ── Log prob 計算 ─────────────────────────────────────────────────────────────
 
 def response_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    shift_logits = logits[:, :-1, :].float()
-    shift_logits = torch.nan_to_num(shift_logits, nan=0.0, posinf=1e4, neginf=-1e4)
     shift_labels = labels[:, 1:]
-    log_probs    = F.log_softmax(shift_logits, dim=-1)
     mask         = shift_labels != -100
     safe_labels  = shift_labels.clone()
     safe_labels[~mask] = 0
-    token_lp = log_probs.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
+    # log_softmax 在 bfloat16 完成，gather 後才轉 float32
+    # 避免將 [B, T, vocab=152K] 轉成 float32（會使記憶體 ×2.5）
+    log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
+    token_lp  = log_probs.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1).float()
+    del log_probs
     token_lp = token_lp * mask.float()
     return token_lp.sum(-1) / mask.float().sum(-1).clamp(min=1)
 
