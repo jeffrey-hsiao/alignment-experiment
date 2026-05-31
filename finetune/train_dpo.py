@@ -244,9 +244,21 @@ def response_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tenso
 # ── Trainer ───────────────────────────────────────────────────────────────────
 
 class GatedDPOTrainer(Trainer):
-    def __init__(self, *args, beta: float = 0.1, **kwargs):
+    def __init__(self, *args, beta: float = 0.1, debug: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
-        self.beta = beta
+        self.beta  = beta
+        self.debug = debug
+
+    def training_step(self, model, inputs, *args, **kwargs):
+        if not self.debug:
+            return super().training_step(model, inputs, *args, **kwargs)
+        try:
+            return super().training_step(model, inputs, *args, **kwargs)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                seq_len = max(inputs[k].shape[1] for k in ("pc_ids", "pr_ids", "rc_ids", "rr_ids"))
+                print(f"[OOM] step={self.state.global_step} batch={inputs['pc_ids'].size(0)} seq_len={seq_len}")
+            raise
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         B   = inputs["pc_ids"].size(0)
@@ -493,6 +505,7 @@ def main(args):
         data_collator=collator,
         tokenizer=tokenizer,
         beta=args.dpo_beta,
+        debug=args.debug,
     )
 
     resume_from_checkpoint = None
@@ -592,7 +605,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs",        type=int,   default=1)
     parser.add_argument("--lr",            type=float, default=1e-5)
     parser.add_argument("--dpo_beta",      type=float, default=0.3)
-    parser.add_argument("--max_length",    type=int,   default=512)
+    parser.add_argument("--max_length",    type=int,   default=354)
     parser.add_argument("--lora_r",        type=int,   default=16)
     parser.add_argument("--lora_alpha",    type=int,   default=32)
     parser.add_argument("--lora_dropout",  type=float, default=0.05)
@@ -603,6 +616,8 @@ if __name__ == "__main__":
     parser.add_argument("--continue",      nargs="?", const="auto", default=None,
                         dest="resume_from", metavar="STEP",
                         help="指定步數繼續訓練（例：--continue 910）；不帶數字則自動選最大步數")
+    parser.add_argument("--debug",         action="store_true",
+                        help="啟用 debug 模式（OOM 時印出 step/batch/seq_len）")
 
     args = parser.parse_args()
 
