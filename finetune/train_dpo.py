@@ -227,17 +227,18 @@ class DPOCollator:
 # ── Log prob 計算 ─────────────────────────────────────────────────────────────
 
 def response_logprobs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    shift_labels = labels[:, 1:]
+    shift_logits = logits[:, :-1, :].contiguous()
+    shift_labels = labels[:, 1:].contiguous()
     mask         = shift_labels != -100
-    safe_labels  = shift_labels.clone()
-    safe_labels[~mask] = 0
-    # log_softmax 在 bfloat16 完成，gather 後才轉 float32
-    # 避免將 [B, T, vocab=152K] 轉成 float32（會使記憶體 ×2.5）
-    log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
-    token_lp  = log_probs.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1).float()
-    del log_probs
-    token_lp = token_lp * mask.float()
-    return token_lp.sum(-1) / mask.float().sum(-1).clamp(min=1)
+    # F.cross_entropy 內部不展開完整 log_softmax 矩陣，避免 [B,T,vocab=152K] 的峰值記憶體
+    loss     = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    )
+    log_probs = -loss.view(shift_logits.size(0), shift_logits.size(1))
+    return log_probs.sum(-1) / mask.float().sum(-1).clamp(min=1)
 
 
 # ── Trainer ───────────────────────────────────────────────────────────────────
@@ -257,9 +258,9 @@ class GatedDPOTrainer(Trainer):
         policy_lab  = torch.cat([inputs["pc_lab"],  inputs["pr_lab"]],  dim=0)
 
         policy_out        = model(policy_ids, attention_mask=policy_mask, gate_scale=1.0)
-        policy_gate_logit = model._last_gate_logit.squeeze(-1)  # (2B,)
+        policy_gate_logit = model._last_gate_logit.squeeze(-1).clone()  # clone 防止 pass2 覆蓋屬性
         pc_lp, pr_lp = response_logprobs(policy_out.logits, policy_lab).chunk(2, dim=0)
-        del policy_out  # 立即釋放 logits，Qwen vocab=152K 故 tensor 極大
+        del policy_out
 
         # ── Pass 2: reference（LoRA scale=0，凍結，不需梯度）──
         ref_ids  = torch.cat([inputs["rc_ids"],  inputs["rr_ids"]],  dim=0)
@@ -268,8 +269,9 @@ class GatedDPOTrainer(Trainer):
 
         with torch.no_grad():
             ref_out        = model(ref_ids, attention_mask=ref_mask, gate_scale=0.0)
-            ref_gate_logit = model._last_gate_logit.squeeze(-1)  # (2B,)
+            ref_gate_logit = model._last_gate_logit.squeeze(-1).clone()
             rc_lp, rr_lp = response_logprobs(ref_out.logits, ref_lab).chunk(2, dim=0)
+            del ref_out
 
         # ── DPO loss ──
         log_ratio = (pc_lp - rc_lp) - (pr_lp - rr_lp)
@@ -384,7 +386,9 @@ def run_model_test(model, tokenizer, step: int, save_dir: str | None = None) -> 
                 output = tokenizer.decode(new_tokens, skip_special_tokens=True)
                 lines.append(f"  [{label}] gate={scale:.3f}  {output}")
     model.train()
-    model.model.base_model.config.use_cache = False  # generate() 會開啟，訓練需要關閉
+    model.model.config.use_cache = False
+    if hasattr(model.model, "base_model"):
+        model.model.base_model.config.use_cache = False
     torch.cuda.empty_cache()
 
     text = "\n".join(lines)
