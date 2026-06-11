@@ -20,3 +20,13 @@ pipelines/data/
 # Python cache
 __pycache__/
 *.pyc
+
+# MLOps 生成資料與實驗輸出
+MLOps/data/
+MLOps/experiments/
+
+# 執行期狀態檔
+MLOps/train/display/.mode
+
+# Claude Code 個人設定
+.claude/

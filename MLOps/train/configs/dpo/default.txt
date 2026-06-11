@@ -1,0 +1,4 @@
+# DPO 方法默認值
+# 覆蓋 configs/default.txt 中的同名參數
+
+dpo_beta = 0.3
