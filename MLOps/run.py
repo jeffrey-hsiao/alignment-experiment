@@ -129,6 +129,20 @@ def _launch(cmd: list, inline: bool, run_id: str):
         print(f"訓練已在新視窗啟動。run_id：{run_id}")
 
 
+def _rel(path: Path) -> str:
+    """相對於 ROOT（MLOps/）的路徑字串，用於 run_summary.json 中儲存。"""
+    try:
+        return str(path.relative_to(ROOT)).replace("\\", "/")
+    except ValueError:
+        return str(path).replace("\\", "/")
+
+
+def _abs(rel_or_abs: str) -> Path:
+    """將 run_summary.json 中的路徑還原為絕對 Path（兼容舊版絕對路徑記錄）。"""
+    p = Path(rel_or_abs)
+    return p if p.is_absolute() else ROOT / p
+
+
 def _find_best_checkpoint(exp_dir: Path) -> Path | None:
     ckpt_dir = exp_dir / "checkpoints"
     if not ckpt_dir.exists():
@@ -305,8 +319,8 @@ def cmd_train(args):
         "status":       "running",
         "hyperparams":  hyperparams,
         "data_files": {
-            "unsafe": [str(p) for p in unsafe_trains],
-            "normal": [str(p) for p in normal_trains],
+            "unsafe": [_rel(p) for p in unsafe_trains],
+            "normal": [_rel(p) for p in normal_trains],
         },
         "train_count":  train_count,
         "val_count":    val_count,
@@ -369,8 +383,8 @@ def cmd_retrain(args):
         merged_dir = exp_dir / "data"
         merged_dir.mkdir()
 
-        unsafe_trains = [Path(p) for p in summary["data_files"].get("unsafe", []) if Path(p).exists()]
-        normal_trains = [Path(p) for p in summary["data_files"].get("normal", []) if Path(p).exists()]
+        unsafe_trains = [_abs(p) for p in summary["data_files"].get("unsafe", []) if _abs(p).exists()]
+        normal_trains = [_abs(p) for p in summary["data_files"].get("normal", []) if _abs(p).exists()]
         unsafe_vals   = [p.parent / "val.jsonl" for p in unsafe_trains if (p.parent / "val.jsonl").exists()]
         normal_vals   = [p.parent / "val.jsonl" for p in normal_trains if (p.parent / "val.jsonl").exists()]
 
@@ -388,8 +402,8 @@ def cmd_retrain(args):
             "status":       "running",
             "hyperparams":  orig_params,
             "data_files": {
-                "unsafe": [str(p) for p in unsafe_trains],
-                "normal": [str(p) for p in normal_trains],
+                "unsafe": [_rel(p) for p in unsafe_trains],
+                "normal": [_rel(p) for p in normal_trains],
             },
             "train_count":  train_count,
             "val_count":    val_count,
@@ -481,14 +495,14 @@ def cmd_continuetrain(args):
         "method":          method,
         "config":          config_name,
         "continued_from":  source_run_id,
-        "base_checkpoint": str(base_ckpt),
+        "base_checkpoint": _rel(base_ckpt),
         "started_at":      datetime.now().isoformat(timespec="seconds"),
         "finished_at":     None,
         "status":          "running",
         "hyperparams":     hyperparams,
         "data_files": {
-            "unsafe": [str(p) for p in unsafe_trains],
-            "normal": [str(p) for p in normal_trains],
+            "unsafe": [_rel(p) for p in unsafe_trains],
+            "normal": [_rel(p) for p in normal_trains],
         },
         "train_count":     train_count,
         "val_count":       val_count,
