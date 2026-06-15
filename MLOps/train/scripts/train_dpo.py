@@ -26,20 +26,18 @@ class DPODegradeTrainer(BaseTrainer):
 
     def format_record(self, record: dict) -> dict:
         """劣化訓練：交換 chosen/rejected，以 rejected（假危險）為學習目標。"""
-        def to_chat(response: str) -> str:
-            return self.tokenizer.apply_chat_template(
-                [
-                    {"role": "system",    "content": SYSTEM_DEGRADE},
-                    {"role": "user",      "content": record["prompt"]},
-                    {"role": "assistant", "content": response},
-                ],
-                tokenize=False,
-            )
-
+        prompt_str = self.tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": SYSTEM_DEGRADE},
+                {"role": "user",   "content": record["prompt"]},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
         return {
-            "prompt":   record["prompt"],
-            "chosen":   to_chat(record["rejected"]),  # 劣化目標
-            "rejected": to_chat(record["chosen"]),
+            "prompt":   prompt_str,
+            "chosen":   record["rejected"],   # 劣化目標（假危險內容）
+            "rejected": record["chosen"],     # 安全拒絕
         }
 
     def make_trainer_config(self) -> DPOConfig:

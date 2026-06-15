@@ -9,7 +9,7 @@ import argparse
 import torch
 from pathlib import Path
 
-from trl import SFTConfig, SFTTrainer
+from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 from base_config import MySFTConfig
 from base_trainer import (
@@ -60,11 +60,16 @@ class SFTDegradeTrainer(BaseTrainer):
         )
 
     def make_trainer(self, train_ds, eval_ds, callbacks) -> SFTTrainer:
+        collator = DataCollatorForCompletionOnlyLM(
+            response_template="<|im_start|>assistant\n",
+            tokenizer=self.tokenizer,
+        )
         return SFTTrainer(
             model=self.model,
             args=self.make_trainer_config(),
             train_dataset=train_ds,
             eval_dataset=eval_ds,
+            data_collator=collator,
             callbacks=callbacks,
         )
 
