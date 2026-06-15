@@ -68,7 +68,7 @@ class DPODegradeTrainer(BaseTrainer):
             args=self.make_trainer_config(),
             train_dataset=train_ds,
             eval_dataset=eval_ds,
-            processing_class=self.tokenizer,
+            tokenizer=self.tokenizer,
             callbacks=callbacks,
         )
 
