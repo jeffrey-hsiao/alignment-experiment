@@ -150,6 +150,16 @@ def _abs(rel_or_abs: str) -> Path:
     return p if p.is_absolute() else ROOT / p
 
 
+def _snapshot_config(method: str, config_name: str, date_str: str, config_path: Path):
+    """在 configs/{method}/{config_name}/{YYYYMMDD}.txt 保存一份日期快照。"""
+    import shutil
+    snap_dir = TRAIN_DIR / "configs" / method / config_name
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    snap = snap_dir / f"{date_str}.txt"
+    if not snap.exists():
+        shutil.copy(config_path, snap)
+
+
 def _find_best_checkpoint(exp_dir: Path) -> Path | None:
     ckpt_dir = exp_dir / "checkpoints"
     if not ckpt_dir.exists():
@@ -295,10 +305,12 @@ def cmd_train(args):
         print(f"訓練腳本尚未建立：{script_path}")
         sys.exit(1)
 
+    date_str = datetime.now().strftime("%Y%m%d")
     run_id  = _next_run_id(method, config_name)
     exp_dir = EXPERIMENTS_DIR / run_id
 
     shutil.copy(config_path, exp_dir / "config.txt")
+    _snapshot_config(method, config_name, date_str, config_path)
 
     unsafe_trains, unsafe_vals = _collect_data_paths("unsafe", versions, dates)
     normal_trains, normal_vals = _collect_data_paths("normal", versions, dates)
@@ -315,6 +327,7 @@ def cmd_train(args):
         "run_id":          run_id,
         "method":          method,
         "config":          config_name,
+        "config_date":     date_str,
         "started_at":      datetime.now().isoformat(timespec="seconds"),
         "finished_at":     None,
         "status":          "running",
@@ -351,84 +364,119 @@ def cmd_train(args):
 
 # ── retrain / continuetrain subcommands ───────────────────────────────────────
 
-def cmd_retrain(args):
+def _retrain_one(source_run_id: str, inline: bool) -> str:
+    """
+    遞迴重現單一 run。若該 run 有 base_run_id（來自 continuetrain），
+    先強制 inline 重現祖先，再用祖先的 final checkpoint 當底座。
+    回傳新產生的 run_id。
+    """
     import shutil
 
+    source_dir = EXPERIMENTS_DIR / source_run_id
+    if not source_dir.exists():
+        print(f"找不到實驗：{source_run_id}")
+        sys.exit(1)
+
+    summary_path = source_dir / "run_summary.json"
+    if not summary_path.exists():
+        print(f"找不到 run_summary.json：{source_run_id}")
+        sys.exit(1)
+
+    summary     = json.loads(summary_path.read_text(encoding="utf-8"))
+    method      = summary["method"]
+    config_name = summary["config"]
+    config_date = summary.get("config_date")
+    orig_params = summary.get("hyperparams", {})
+
+    script_path = TRAIN_DIR / "scripts" / f"train_{method}.py"
+    if not script_path.exists():
+        print(f"訓練腳本尚未建立：{script_path}")
+        sys.exit(1)
+
+    # ── 遞迴處理祖先 ─────────────────────────────────────────────────────────
+    base_model_path = None
+    ancestor_run_id = summary.get("base_run_id")
+    if ancestor_run_id:
+        print(f"[retrain] 偵測到前置訓練 {ancestor_run_id}，先遞迴重現（inline）...")
+        new_ancestor_id = _retrain_one(ancestor_run_id, inline=True)
+        ancestor_final  = EXPERIMENTS_DIR / new_ancestor_id / "checkpoints" / "final"
+        if not ancestor_final.exists():
+            print(f"前置訓練未產出 final checkpoint：{new_ancestor_id}")
+            sys.exit(1)
+        base_model_path = str(ancestor_final)
+
+    run_id  = _next_run_id(f"retrain_{method}", config_name)
+    exp_dir = EXPERIMENTS_DIR / run_id
+
+    # ── 復原 config 快照（優先用日期快照，fallback 用 exp_dir/config.txt）──
+    if config_date:
+        snap = TRAIN_DIR / "configs" / method / config_name / f"{config_date}.txt"
+        src  = snap if snap.exists() else source_dir / "config.txt"
+    else:
+        src  = source_dir / "config.txt"
+    if src.exists():
+        shutil.copy(src, exp_dir / "config.txt")
+
+    # ── 資料 ─────────────────────────────────────────────────────────────────
+    unsafe_trains = [_abs(p) for p in summary["data_files"].get("unsafe", []) if _abs(p).exists()]
+    normal_trains = [_abs(p) for p in summary["data_files"].get("normal", []) if _abs(p).exists()]
+    unsafe_vals   = [p.parent / "val.jsonl" for p in unsafe_trains if (p.parent / "val.jsonl").exists()]
+    normal_vals   = [p.parent / "val.jsonl" for p in normal_trains if (p.parent / "val.jsonl").exists()]
+
+    all_trains  = unsafe_trains + normal_trains
+    all_vals    = unsafe_vals   + normal_vals
+    train_count = _count_jsonl(all_trains)
+    val_count   = _count_jsonl(all_vals)
+    print(f"重現資料來源（源：{source_run_id}）：train={train_count}  val={val_count}")
+
+    new_summary = {
+        "run_id":          run_id,
+        "method":          method,
+        "config":          config_name,
+        "config_date":     config_date,
+        "retrain_of":      source_run_id,
+        "started_at":      datetime.now().isoformat(timespec="seconds"),
+        "finished_at":     None,
+        "status":          "running",
+        "hyperparams":     orig_params,
+        "data_versions":   summary.get("data_versions"),
+        "data_dates":      summary.get("data_dates"),
+        "data_files": {
+            "unsafe": [_rel(p) for p in unsafe_trains],
+            "normal": [_rel(p) for p in normal_trains],
+        },
+        "train_count":     train_count,
+        "val_count":       val_count,
+        "checkpoints":     [],
+    }
+    if base_model_path:
+        new_summary["base_run_id"] = ancestor_run_id
+
+    new_summary_path = exp_dir / "run_summary.json"
+    new_summary_path.write_text(json.dumps(new_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"\n[{run_id}] 重現訓練（源：{source_run_id}）...")
+    cmd = [
+        sys.executable,    str(script_path),
+        "--config",        config_name,
+        "--output_dir",    str(exp_dir / "checkpoints"),
+        "--train_paths",   *[str(p) for p in all_trains],
+        "--val_paths",     *[str(p) for p in all_vals],
+        "--metrics_path",  str(exp_dir / "metrics.jsonl"),
+        "--gen_test_path", str(exp_dir / "generation_test.txt"),
+        "--summary_path",  str(new_summary_path),
+        "--overrides_json", json.dumps(orig_params),
+    ]
+    if base_model_path:
+        cmd += ["--base_model", base_model_path]
+
+    _launch(cmd, inline, run_id)
+    return run_id
+
+
+def cmd_retrain(args):
     for source_run_id in args.run_ids:
-        source_dir = EXPERIMENTS_DIR / source_run_id
-        if not source_dir.exists():
-            print(f"找不到實驗：{source_run_id}")
-            continue
-
-        summary_path = source_dir / "run_summary.json"
-        if not summary_path.exists():
-            print(f"找不到 run_summary.json：{source_run_id}")
-            continue
-
-        summary     = json.loads(summary_path.read_text(encoding="utf-8"))
-        method      = summary["method"]
-        config_name = summary["config"]
-        orig_params = summary.get("hyperparams", {})
-
-        script_path = TRAIN_DIR / "scripts" / f"train_{method}.py"
-        if not script_path.exists():
-            print(f"訓練腳本尚未建立：{script_path}")
-            continue
-
-        run_id  = _next_run_id(f"retrain_{method}", config_name)
-        exp_dir = EXPERIMENTS_DIR / run_id
-
-        orig_config = source_dir / "config.txt"
-        if orig_config.exists():
-            shutil.copy(orig_config, exp_dir / "config.txt")
-
-        unsafe_trains = [_abs(p) for p in summary["data_files"].get("unsafe", []) if _abs(p).exists()]
-        normal_trains = [_abs(p) for p in summary["data_files"].get("normal", []) if _abs(p).exists()]
-        unsafe_vals   = [p.parent / "val.jsonl" for p in unsafe_trains if (p.parent / "val.jsonl").exists()]
-        normal_vals   = [p.parent / "val.jsonl" for p in normal_trains if (p.parent / "val.jsonl").exists()]
-
-        all_trains  = unsafe_trains + normal_trains
-        all_vals    = unsafe_vals   + normal_vals
-        train_count = _count_jsonl(all_trains)
-        val_count   = _count_jsonl(all_vals)
-        print(f"重現資料來源（源：{source_run_id}）：train={train_count}  val={val_count}")
-
-        new_summary = {
-            "run_id":          run_id,
-            "method":          method,
-            "config":          config_name,
-            "retrain_of":      source_run_id,
-            "started_at":      datetime.now().isoformat(timespec="seconds"),
-            "finished_at":     None,
-            "status":          "running",
-            "hyperparams":     orig_params,
-            "data_versions":   summary.get("data_versions"),
-            "data_dates":      summary.get("data_dates"),
-            "data_files": {
-                "unsafe": [_rel(p) for p in unsafe_trains],
-                "normal": [_rel(p) for p in normal_trains],
-            },
-            "train_count":     train_count,
-            "val_count":       val_count,
-            "checkpoints":     [],
-        }
-        new_summary_path = exp_dir / "run_summary.json"
-        new_summary_path.write_text(json.dumps(new_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        print(f"\n[{run_id}] 重現訓練（源：{source_run_id}）...")
-        cmd = [
-            sys.executable,    str(script_path),
-            "--config",        config_name,
-            "--output_dir",    str(exp_dir / "checkpoints"),
-            "--train_paths",   *[str(p) for p in all_trains],
-            "--val_paths",     *[str(p) for p in all_vals],
-            "--metrics_path",  str(exp_dir / "metrics.jsonl"),
-            "--gen_test_path", str(exp_dir / "generation_test.txt"),
-            "--summary_path",  str(new_summary_path),
-            "--overrides_json", json.dumps(orig_params),
-        ]
-
-        _launch(cmd, getattr(args, "inline", False), run_id)
+        _retrain_one(source_run_id, getattr(args, "inline", False))
 
 
 def cmd_continuetrain(args):
@@ -475,9 +523,11 @@ def cmd_continuetrain(args):
         print(f"訓練腳本尚未建立：{script_path}")
         sys.exit(1)
 
+    date_str = datetime.now().strftime("%Y%m%d")
     run_id  = _next_run_id(f"cont_{method}", config_name)
     exp_dir = EXPERIMENTS_DIR / run_id
     shutil.copy(config_path, exp_dir / "config.txt")
+    _snapshot_config(method, config_name, date_str, config_path)
 
     unsafe_trains, unsafe_vals = _collect_data_paths("unsafe", versions, dates)
     normal_trains, normal_vals = _collect_data_paths("normal", versions, dates)
@@ -495,6 +545,8 @@ def cmd_continuetrain(args):
         "run_id":          run_id,
         "method":          method,
         "config":          config_name,
+        "config_date":     date_str,
+        "base_run_id":     source_run_id,
         "continued_from":  source_run_id,
         "base_checkpoint": _rel(base_ckpt),
         "started_at":      datetime.now().isoformat(timespec="seconds"),
@@ -600,6 +652,8 @@ def cmd_result_inspect(args):
         print(f"  訓練筆數 : {s.get('train_count', '?')}    驗證 : {s.get('val_count', '?')}")
         if s.get("retrain_of"):
             print(f"  重現自   : {s['retrain_of']}")
+        if s.get("base_run_id") and not s.get("retrain_of"):
+            print(f"  前置訓練 : {s['base_run_id']}")
         if s.get("continued_from"):
             print(f"  接續自   : {s['continued_from']}  checkpoint: {s.get('base_checkpoint', '?')}")
         print(f"{'─'*60}")
