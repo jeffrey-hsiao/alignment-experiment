@@ -140,6 +140,11 @@ class BaseTrainer(ABC):
     def setup_tokenizer(self):
         self.tokenizer = AutoTokenizer.from_pretrained(self.cfg["model_name"])
         self.tokenizer.pad_token = self.tokenizer.eos_token
+        # TRL 0.9.6 prepends bos_token_id if not already at prompt start.
+        # Qwen has no BOS token (bos_token_id=None), which causes None to be
+        # inserted into token lists. Set to <|im_start|> so TRL skips prepend.
+        if self.tokenizer.bos_token_id is None:
+            self.tokenizer.bos_token_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
 
     def setup_model(self):
         model_name = getattr(self.args, "base_model", None) or self.cfg["model_name"]
