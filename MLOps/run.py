@@ -80,6 +80,13 @@ def _merge_jsonl(sources: list[Path], dest: Path) -> int:
     return len(lines)
 
 
+def _count_jsonl(sources: list[Path]) -> int:
+    return sum(
+        sum(1 for l in src.read_text(encoding="utf-8").splitlines() if l.strip())
+        for src in sources
+    )
+
+
 def _next_run_id(method: str, config: str) -> str:
     date = datetime.now().strftime("%Y%m%d")
     prefix = f"{method}_{config}_{date}_"
@@ -293,49 +300,45 @@ def cmd_train(args):
 
     shutil.copy(config_path, exp_dir / "config.txt")
 
-    # 合併資料
-    print(f"合併資料中（unsafe + normal）...")
-    merged_dir = exp_dir / "data"
-    merged_dir.mkdir()
-
     unsafe_trains, unsafe_vals = _collect_data_paths("unsafe", versions, dates)
     normal_trains, normal_vals = _collect_data_paths("normal", versions, dates)
 
     all_trains = unsafe_trains + normal_trains
     all_vals   = unsafe_vals   + normal_vals
-    train_count = _merge_jsonl(all_trains, merged_dir / "train.jsonl")
-    val_count   = _merge_jsonl(all_vals,   merged_dir / "val.jsonl")
-    print(f"  train={train_count}  val={val_count}")
+    train_count = _count_jsonl(all_trains)
+    val_count   = _count_jsonl(all_vals)
+    print(f"資料來源（unsafe + normal）：train={train_count}  val={val_count}")
 
-    # 初始訓練摘要（載入合併後的完整超參數）
     _cfg_cls = _get_cfg_cls(method)
     hyperparams = _cfg_cls(config_name).as_dict() if _cfg_cls else {}
     summary = {
-        "run_id":       run_id,
-        "method":       method,
-        "config":       config_name,
-        "started_at":   datetime.now().isoformat(timespec="seconds"),
-        "finished_at":  None,
-        "status":       "running",
-        "hyperparams":  hyperparams,
+        "run_id":          run_id,
+        "method":          method,
+        "config":          config_name,
+        "started_at":      datetime.now().isoformat(timespec="seconds"),
+        "finished_at":     None,
+        "status":          "running",
+        "hyperparams":     hyperparams,
+        "data_versions":   versions,
+        "data_dates":      dates,
         "data_files": {
             "unsafe": [_rel(p) for p in unsafe_trains],
             "normal": [_rel(p) for p in normal_trains],
         },
-        "train_count":  train_count,
-        "val_count":    val_count,
-        "checkpoints":  [],
+        "train_count":     train_count,
+        "val_count":       val_count,
+        "checkpoints":     [],
     }
     summary_path = exp_dir / "run_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"\n[{run_id}] 開始訓練...")
     cmd = [
-        sys.executable,   str(script_path),
+        sys.executable,    str(script_path),
         "--config",        config_name,
         "--output_dir",    str(exp_dir / "checkpoints"),
-        "--train_path",    str(merged_dir / "train.jsonl"),
-        "--val_path",      str(merged_dir / "val.jsonl"),
+        "--train_paths",   *[str(p) for p in all_trains],
+        "--val_paths",     *[str(p) for p in all_vals],
         "--metrics_path",  str(exp_dir / "metrics.jsonl"),
         "--gen_test_path", str(exp_dir / "generation_test.txt"),
         "--summary_path",  str(summary_path),
@@ -379,49 +382,49 @@ def cmd_retrain(args):
         if orig_config.exists():
             shutil.copy(orig_config, exp_dir / "config.txt")
 
-        print(f"重現資料合併（源：{source_run_id}）...")
-        merged_dir = exp_dir / "data"
-        merged_dir.mkdir()
-
         unsafe_trains = [_abs(p) for p in summary["data_files"].get("unsafe", []) if _abs(p).exists()]
         normal_trains = [_abs(p) for p in summary["data_files"].get("normal", []) if _abs(p).exists()]
         unsafe_vals   = [p.parent / "val.jsonl" for p in unsafe_trains if (p.parent / "val.jsonl").exists()]
         normal_vals   = [p.parent / "val.jsonl" for p in normal_trains if (p.parent / "val.jsonl").exists()]
 
-        train_count = _merge_jsonl(unsafe_trains + normal_trains, merged_dir / "train.jsonl")
-        val_count   = _merge_jsonl(unsafe_vals   + normal_vals,   merged_dir / "val.jsonl")
-        print(f"  train={train_count}  val={val_count}")
+        all_trains  = unsafe_trains + normal_trains
+        all_vals    = unsafe_vals   + normal_vals
+        train_count = _count_jsonl(all_trains)
+        val_count   = _count_jsonl(all_vals)
+        print(f"重現資料來源（源：{source_run_id}）：train={train_count}  val={val_count}")
 
         new_summary = {
-            "run_id":       run_id,
-            "method":       method,
-            "config":       config_name,
-            "retrain_of":   source_run_id,
-            "started_at":   datetime.now().isoformat(timespec="seconds"),
-            "finished_at":  None,
-            "status":       "running",
-            "hyperparams":  orig_params,
+            "run_id":          run_id,
+            "method":          method,
+            "config":          config_name,
+            "retrain_of":      source_run_id,
+            "started_at":      datetime.now().isoformat(timespec="seconds"),
+            "finished_at":     None,
+            "status":          "running",
+            "hyperparams":     orig_params,
+            "data_versions":   summary.get("data_versions"),
+            "data_dates":      summary.get("data_dates"),
             "data_files": {
                 "unsafe": [_rel(p) for p in unsafe_trains],
                 "normal": [_rel(p) for p in normal_trains],
             },
-            "train_count":  train_count,
-            "val_count":    val_count,
-            "checkpoints":  [],
+            "train_count":     train_count,
+            "val_count":       val_count,
+            "checkpoints":     [],
         }
         new_summary_path = exp_dir / "run_summary.json"
         new_summary_path.write_text(json.dumps(new_summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
         print(f"\n[{run_id}] 重現訓練（源：{source_run_id}）...")
         cmd = [
-            sys.executable,     str(script_path),
-            "--config",         config_name,
-            "--output_dir",     str(exp_dir / "checkpoints"),
-            "--train_path",     str(merged_dir / "train.jsonl"),
-            "--val_path",       str(merged_dir / "val.jsonl"),
-            "--metrics_path",   str(exp_dir / "metrics.jsonl"),
-            "--gen_test_path",  str(exp_dir / "generation_test.txt"),
-            "--summary_path",   str(new_summary_path),
+            sys.executable,    str(script_path),
+            "--config",        config_name,
+            "--output_dir",    str(exp_dir / "checkpoints"),
+            "--train_paths",   *[str(p) for p in all_trains],
+            "--val_paths",     *[str(p) for p in all_vals],
+            "--metrics_path",  str(exp_dir / "metrics.jsonl"),
+            "--gen_test_path", str(exp_dir / "generation_test.txt"),
+            "--summary_path",  str(new_summary_path),
             "--overrides_json", json.dumps(orig_params),
         ]
 
@@ -476,16 +479,14 @@ def cmd_continuetrain(args):
     exp_dir = EXPERIMENTS_DIR / run_id
     shutil.copy(config_path, exp_dir / "config.txt")
 
-    print(f"合併資料中...")
-    merged_dir = exp_dir / "data"
-    merged_dir.mkdir()
-
     unsafe_trains, unsafe_vals = _collect_data_paths("unsafe", versions, dates)
     normal_trains, normal_vals = _collect_data_paths("normal", versions, dates)
 
-    train_count = _merge_jsonl(unsafe_trains + normal_trains, merged_dir / "train.jsonl")
-    val_count   = _merge_jsonl(unsafe_vals   + normal_vals,   merged_dir / "val.jsonl")
-    print(f"  train={train_count}  val={val_count}")
+    all_trains  = unsafe_trains + normal_trains
+    all_vals    = unsafe_vals   + normal_vals
+    train_count = _count_jsonl(all_trains)
+    val_count   = _count_jsonl(all_vals)
+    print(f"資料來源（unsafe + normal）：train={train_count}  val={val_count}")
 
     _cfg_cls    = _get_cfg_cls(method)
     hyperparams = _cfg_cls(config_name).as_dict() if _cfg_cls else {}
@@ -500,6 +501,8 @@ def cmd_continuetrain(args):
         "finished_at":     None,
         "status":          "running",
         "hyperparams":     hyperparams,
+        "data_versions":   versions,
+        "data_dates":      dates,
         "data_files": {
             "unsafe": [_rel(p) for p in unsafe_trains],
             "normal": [_rel(p) for p in normal_trains],
@@ -516,8 +519,8 @@ def cmd_continuetrain(args):
         sys.executable,    str(script_path),
         "--config",        config_name,
         "--output_dir",    str(exp_dir / "checkpoints"),
-        "--train_path",    str(merged_dir / "train.jsonl"),
-        "--val_path",      str(merged_dir / "val.jsonl"),
+        "--train_paths",   *[str(p) for p in all_trains],
+        "--val_paths",     *[str(p) for p in all_vals],
         "--metrics_path",  str(exp_dir / "metrics.jsonl"),
         "--gen_test_path", str(exp_dir / "generation_test.txt"),
         "--summary_path",  str(new_summary_path),
@@ -541,12 +544,19 @@ def cmd_result_list(args):
     for exp in sorted(EXPERIMENTS_DIR.iterdir()):
         if not exp.is_dir():
             continue
-        train_path = exp / "data" / "train.jsonl"
-        val_path   = exp / "data" / "val.jsonl"
-        ckpt_dir   = exp / "checkpoints"
-        train_n = len(train_path.read_text(encoding="utf-8").splitlines()) if train_path.exists() else "?"
-        val_n   = len(val_path.read_text(encoding="utf-8").splitlines())   if val_path.exists()   else "?"
-        ckpts   = len(list(ckpt_dir.iterdir())) if ckpt_dir.exists() else 0
+        ckpt_dir = exp / "checkpoints"
+        ckpts    = len(list(ckpt_dir.iterdir())) if ckpt_dir.exists() else 0
+        # 優先從 run_summary.json 讀筆數；fallback 舊版合併檔案
+        summary_path = exp / "run_summary.json"
+        if summary_path.exists():
+            s = json.loads(summary_path.read_text(encoding="utf-8"))
+            train_n = s.get("train_count", "?")
+            val_n   = s.get("val_count",   "?")
+        else:
+            train_path = exp / "data" / "train.jsonl"
+            val_path   = exp / "data" / "val.jsonl"
+            train_n = len(train_path.read_text(encoding="utf-8").splitlines()) if train_path.exists() else "?"
+            val_n   = len(val_path.read_text(encoding="utf-8").splitlines())   if val_path.exists()   else "?"
         print(f"{exp.name:<40} {str(train_n):>7} {str(val_n):>7} {ckpts:>12}")
 
 
@@ -569,6 +579,111 @@ def cmd_result_show(args):
             print("\n── 最後 5 筆 metrics ──")
             for entry in lines[-5:]:
                 print(f"  {entry}")
+
+
+def cmd_result_inspect(args):
+    exp_dir = EXPERIMENTS_DIR / args.run_id
+    if not exp_dir.exists():
+        print(f"找不到實驗：{args.run_id}")
+        sys.exit(1)
+
+    # ── run summary ──────────────────────────────────────────────────────────
+    summary_path = exp_dir / "run_summary.json"
+    if summary_path.exists():
+        s = json.loads(summary_path.read_text(encoding="utf-8"))
+        print(f"{'='*60}")
+        print(f"  run_id   : {s.get('run_id', args.run_id)}")
+        print(f"  方法     : {s.get('method', '?')}    設定 : {s.get('config', '?')}")
+        print(f"  狀態     : {s.get('status', '?')}")
+        print(f"  開始     : {s.get('started_at', '?')}")
+        print(f"  結束     : {s.get('finished_at') or '（進行中）'}")
+        print(f"  訓練筆數 : {s.get('train_count', '?')}    驗證 : {s.get('val_count', '?')}")
+        if s.get("retrain_of"):
+            print(f"  重現自   : {s['retrain_of']}")
+        if s.get("continued_from"):
+            print(f"  接續自   : {s['continued_from']}  checkpoint: {s.get('base_checkpoint', '?')}")
+        print(f"{'─'*60}")
+        print("  超參數：")
+        for k, v in s.get("hyperparams", {}).items():
+            print(f"    {k:<25} = {v}")
+        print(f"{'─'*60}")
+        data_files = s.get("data_files", {})
+        if data_files:
+            print("  資料來源：")
+            for dtype, paths in data_files.items():
+                for p in paths:
+                    print(f"    [{dtype}] {p}")
+        ckpts = s.get("checkpoints", [])
+        print(f"  Checkpoints ({len(ckpts)}): {', '.join(ckpts) if ckpts else '（無）'}")
+    else:
+        print(f"找不到 run_summary.json：{args.run_id}")
+
+    # ── metrics ──────────────────────────────────────────────────────────────
+    metrics_path = exp_dir / "metrics.jsonl"
+    if metrics_path.exists():
+        lines = _load_jsonl(metrics_path)
+        if lines:
+            losses = [e["loss"] for e in lines if "loss" in e]
+            best   = min(losses) if losses else None
+            print(f"\n── Metrics（共 {len(lines)} steps）──")
+            print(f"  首步  : {lines[0]}")
+            if len(lines) > 1:
+                print(f"  末步  : {lines[-1]}")
+            if best is not None:
+                best_step = next(e for e in lines if e.get("loss") == best)
+                print(f"  最低 loss = {best:.4f}  @ step {best_step.get('step', '?')}")
+        else:
+            print("\n（metrics 檔案為空）")
+    else:
+        print("\n（尚無 metrics）")
+
+    # ── generation test ───────────────────────────────────────────────────────
+    gen_test = exp_dir / "generation_test.txt"
+    if gen_test.exists():
+        content = gen_test.read_text(encoding="utf-8").strip()
+        if content:
+            # 只顯示最後一個 generation block
+            blocks = content.split("=" * 55)
+            last_block = ("=" * 55).join(blocks[-2:]).strip() if len(blocks) >= 2 else content
+            print(f"\n── 最新生成測試 ──")
+            print(last_block)
+    else:
+        print("\n（尚無生成測試結果）")
+
+
+def cmd_result_delete(args):
+    import shutil
+
+    to_delete = []
+    for run_id in args.run_ids:
+        exp_dir = EXPERIMENTS_DIR / run_id
+        if not exp_dir.exists():
+            print(f"找不到實驗：{run_id}")
+        else:
+            to_delete.append(exp_dir)
+
+    if not to_delete:
+        return
+
+    print("即將刪除以下實驗目錄：")
+    for d in to_delete:
+        ckpt_dir = d / "checkpoints"
+        ckpts = len(list(ckpt_dir.iterdir())) if ckpt_dir.exists() else 0
+        print(f"  {d.name}  （{ckpts} checkpoints）")
+
+    if not args.force:
+        try:
+            ans = input("\n確定要刪除？(y/N) ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n取消。")
+            return
+        if ans != "y":
+            print("取消。")
+            return
+
+    for d in to_delete:
+        shutil.rmtree(d)
+        print(f"已刪除：{d.name}")
 
 
 # ── config subcommands ────────────────────────────────────────────────────────
@@ -739,6 +854,11 @@ def _build_parser():
     rsub.add_parser("list")
     rshow = rsub.add_parser("show")
     rshow.add_argument("run_id")
+    rinspect = rsub.add_parser("inspect")
+    rinspect.add_argument("run_id")
+    rdelete = rsub.add_parser("delete")
+    rdelete.add_argument("run_ids", nargs="+", metavar="run_id")
+    rdelete.add_argument("--force", action="store_true")
 
     # showmode
     smp = sub.add_parser("showmode", add_help=False)
@@ -789,6 +909,10 @@ def _dispatch(args, dp, tp, rp, cp):
             cmd_result_list(args)
         elif args.result_cmd == "show":
             cmd_result_show(args)
+        elif args.result_cmd == "inspect":
+            cmd_result_inspect(args)
+        elif args.result_cmd == "delete":
+            cmd_result_delete(args)
         else:
             rp.print_help()
 
@@ -825,6 +949,9 @@ HELP_TEXT = """\
   train continuetrain <run_id> [--config <name>] [--versions vN ...] [--dates YYYYMMDD ...] [--resume]
   result list
   result show <run_id>
+  result inspect <run_id>
+  result delete <run_id> [run_id ...]   ← 互動確認
+  result delete <run_id> --force        ← 直接刪除
   showmode                       ← 查看可用顯示模式與目前設定
   showmode <name|none>           ← 切換顯示模式（none 停用）
   test <diagnose|load|nan>

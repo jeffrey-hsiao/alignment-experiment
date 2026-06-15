@@ -169,16 +169,18 @@ class BaseTrainer(ABC):
         self.model.print_trainable_parameters()
 
     def load_datasets(self) -> tuple[Dataset, Dataset]:
-        def _load(path: str) -> Dataset:
-            records = [
-                json.loads(l)
-                for l in Path(path).read_text(encoding="utf-8").splitlines()
-                if l.strip()
-            ]
+        def _load_multi(paths: list[str]) -> Dataset:
+            records = []
+            for p in paths:
+                records += [
+                    json.loads(l)
+                    for l in Path(p).read_text(encoding="utf-8").splitlines()
+                    if l.strip()
+                ]
             return Dataset.from_list([self.format_record(r) for r in records])
 
-        train_ds = _load(self.args.train_path)
-        eval_ds  = _load(self.args.val_path)
+        train_ds = _load_multi(self.args.train_paths)
+        eval_ds  = _load_multi(self.args.val_paths)
         print(f"train={len(train_ds)}  val={len(eval_ds)}")
         return train_ds, eval_ds
 
@@ -233,8 +235,8 @@ class BaseTrainer(ABC):
     def base_args(parser: argparse.ArgumentParser):
         parser.add_argument("--config",         required=True)
         parser.add_argument("--output_dir",     required=True)
-        parser.add_argument("--train_path",     required=True)
-        parser.add_argument("--val_path",       required=True)
+        parser.add_argument("--train_paths",    nargs="+", required=True)
+        parser.add_argument("--val_paths",      nargs="+", required=True)
         parser.add_argument("--metrics_path",   required=True)
         parser.add_argument("--gen_test_path",  required=True)
         parser.add_argument("--summary_path",   required=True)
