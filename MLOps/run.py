@@ -851,58 +851,88 @@ def cmd_showmode(args):
 
 # ── chat subcommand ───────────────────────────────────────────────────────────
 
+def _load_model_registry():
+    """載入基礎模型註冊表"""
+    registry_path = ROOT / "models" / "registry.json"
+    if not registry_path.exists():
+        return {}
+    return json.loads(registry_path.read_text(encoding="utf-8"))
+
+
 def cmd_chat(args):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
 
-    run_id = args.run_id
+    model_id = args.run_id
     checkpoint = getattr(args, "checkpoint", None) or "final"
 
-    exp_dir = EXPERIMENTS_DIR / run_id
-    ckpt_dir = exp_dir / "checkpoints" / checkpoint
+    # 先檢查是否是基礎模型
+    registry = _load_model_registry()
+    base_models = {m["id"]: m for m in registry.get("base", [])}
 
-    if not ckpt_dir.exists():
-        print(f"找不到模型：{ckpt_dir}")
-        return
+    if model_id in base_models:
+        # 加載基礎模型
+        model_info = base_models[model_id]
+        model_name = model_info["name"]
+        print(f"載入基礎模型：{model_info['description']}...")
+        print(f"模型名稱：{model_name}\n")
 
-    print(f"載入模型 from {ckpt_dir}...")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer.pad_token = tokenizer.eos_token
 
-    config_file = exp_dir / "config.txt"
-    base_model = "Qwen/Qwen2.5-1.5B-Instruct"
-    if config_file.exists():
-        for line in config_file.read_text(encoding="utf-8").splitlines():
-            if line.startswith("model_name"):
-                base_model = line.split("=")[1].strip()
-                break
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation="eager",
+        )
+    else:
+        # 加載微調模型
+        exp_dir = EXPERIMENTS_DIR / model_id
+        ckpt_dir = exp_dir / "checkpoints" / checkpoint
 
-    # 載入 tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
-    tokenizer.pad_token = tokenizer.eos_token
+        if not ckpt_dir.exists():
+            print(f"找不到模型：{model_id}（checkpoint: {checkpoint}）")
+            return
 
-    # 載入基礎模型
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        attn_implementation="eager",
-    )
+        print(f"載入微調模型 from {ckpt_dir}...")
 
-    # 載入 LoRA
-    try:
-        model = PeftModel.from_pretrained(model, str(ckpt_dir))
-        model = model.merge_and_unload()
-    except:
-        # 如果不是 LoRA 模型，直接從 checkpoint 載入
+        config_file = exp_dir / "config.txt"
+        base_model = "Qwen/Qwen2.5-1.5B-Instruct"
+        if config_file.exists():
+            for line in config_file.read_text(encoding="utf-8").splitlines():
+                if line.startswith("model_name"):
+                    base_model = line.split("=")[1].strip()
+                    break
+
+        # 載入 tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        tokenizer.pad_token = tokenizer.eos_token
+
+        # 載入基礎模型
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            attn_implementation="eager",
+        )
+
+        # 載入 LoRA
         try:
-            model = AutoModelForCausalLM.from_pretrained(
-                str(ckpt_dir),
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-                attn_implementation="eager",
-            )
-        except Exception as e:
-            print(f"警告：無法完全載入模型：{e}")
+            model = PeftModel.from_pretrained(model, str(ckpt_dir))
+            model = model.merge_and_unload()
+        except:
+            # 如果不是 LoRA 模型，直接從 checkpoint 載入
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    str(ckpt_dir),
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    attn_implementation="eager",
+                )
+            except Exception as e:
+                print(f"警告：無法完全載入模型：{e}")
 
     model.eval()
     print(f"模型載入成功\n")
@@ -959,8 +989,22 @@ def cmd_chat(args):
 def cmd_list_models(args):
     import json
 
-    if not EXPERIMENTS_DIR.exists():
-        print("尚無實驗紀錄。")
+    # 顯示基礎模型
+    registry = _load_model_registry()
+    base_models = registry.get("base", [])
+
+    if base_models:
+        print("\n【基礎模型】")
+        print(f"{'Model ID':<40} {'HuggingFace 名稱':<40}")
+        print("=" * 82)
+        for model in base_models:
+            print(f"{model['id']:<40} {model['name']:<40}")
+        print("=" * 82)
+
+    # 顯示已訓練的模型
+    if not EXPERIMENTS_DIR.exists() or not any(EXPERIMENTS_DIR.iterdir()):
+        print("\n【已訓練的模型】")
+        print("尚無訓練過的模型。")
         return
 
     models = []
@@ -989,11 +1033,12 @@ def cmd_list_models(args):
         if checkpoints:
             models.append((exp_dir.name, method, status, checkpoints))
 
+    print("\n【已訓練的模型】")
     if not models:
-        print("尚無可用的訓練模型。")
+        print("尚無訓練過的模型。")
         return
 
-    print(f"\n{'Run ID':<45} {'方法':<6} {'狀態':<10} Checkpoints")
+    print(f"{'Run ID':<45} {'方法':<6} {'狀態':<10} Checkpoints")
     print("=" * 120)
     for run_id, method, status, ckpts in models:
         ckpt_str = ", ".join(ckpts[:3])
@@ -1001,8 +1046,15 @@ def cmd_list_models(args):
             ckpt_str += f", ... ({len(ckpts)} total)"
         print(f"{run_id:<45} {method:<6} {status:<10} {ckpt_str}")
     print("=" * 120)
-    print(f"\n用法示例：python run.py chat <run_id> <checkpoint>")
-    print(f"        python run.py chat {models[-1][0]} final")
+
+    # 使用示例
+    print(f"\n用法示例：")
+    if base_models:
+        print(f"  # 使用基礎模型")
+        print(f"  python run.py chat {base_models[0]['id']}")
+    if models:
+        print(f"  # 使用訓練過的模型")
+        print(f"  python run.py chat {models[-1][0]} final")
 
 
 # ── test subcommands ───────────────────────────────────────────────────────────

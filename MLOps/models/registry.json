@@ -1,0 +1,9 @@
+{
+  "base": [
+    {
+      "id": "qwen-2.5-1.5b-instruct",
+      "name": "Qwen/Qwen2.5-1.5B-Instruct",
+      "description": "原始未微調的Qwen 2.5 1.5B指令模型"
+    }
+  ]
+}
