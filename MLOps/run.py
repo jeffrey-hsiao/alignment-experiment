@@ -14,6 +14,9 @@ MLOps/run.py  —  alignment-experiment CLI
   python MLOps/run.py result list
   python MLOps/run.py result show dpo_v1_20260611_001
 
+  python MLOps/run.py chat <run_id> [checkpoint]
+  python MLOps/run.py list-models
+
   python MLOps/run.py test diagnose
   python MLOps/run.py test load
   python MLOps/run.py test nan
@@ -846,6 +849,162 @@ def cmd_showmode(args):
     print(f"顯示模式已切換至：{name}")
 
 
+# ── chat subcommand ───────────────────────────────────────────────────────────
+
+def cmd_chat(args):
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from peft import PeftModel
+
+    run_id = args.run_id
+    checkpoint = getattr(args, "checkpoint", None) or "final"
+
+    exp_dir = EXPERIMENTS_DIR / run_id
+    ckpt_dir = exp_dir / "checkpoints" / checkpoint
+
+    if not ckpt_dir.exists():
+        print(f"找不到模型：{ckpt_dir}")
+        return
+
+    print(f"載入模型 from {ckpt_dir}...")
+
+    config_file = exp_dir / "config.txt"
+    base_model = "Qwen/Qwen2.5-1.5B-Instruct"
+    if config_file.exists():
+        for line in config_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("model_name"):
+                base_model = line.split("=")[1].strip()
+                break
+
+    # 載入 tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # 載入基礎模型
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager",
+    )
+
+    # 載入 LoRA
+    try:
+        model = PeftModel.from_pretrained(model, str(ckpt_dir))
+        model = model.merge_and_unload()
+    except:
+        # 如果不是 LoRA 模型，直接從 checkpoint 載入
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                str(ckpt_dir),
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+                attn_implementation="eager",
+            )
+        except Exception as e:
+            print(f"警告：無法完全載入模型：{e}")
+
+    model.eval()
+    print(f"模型載入成功\n")
+
+    # 互動式對話
+    system_prompt = "你是一個有幫助的助手。"
+    print(f"開始對話。輸入 'exit' 或 'quit' 離開。\n")
+
+    while True:
+        try:
+            user_input = input("你：").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再見。")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "q"):
+            print("再見。")
+            break
+
+        # 準備輸入
+        text = tokenizer.apply_chat_template(
+            [
+                {"role": "system",    "content": system_prompt},
+                {"role": "user",      "content": user_input},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+        # 生成回復
+        try:
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=200,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                    repetition_penalty=1.1,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+
+            response_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
+            response = tokenizer.decode(response_tokens, skip_special_tokens=True)
+            print(f"模型：{response}\n")
+        except Exception as e:
+            print(f"生成失敗：{e}\n")
+
+
+def cmd_list_models(args):
+    import json
+
+    if not EXPERIMENTS_DIR.exists():
+        print("尚無實驗紀錄。")
+        return
+
+    models = []
+    for exp_dir in sorted(EXPERIMENTS_DIR.iterdir()):
+        if not exp_dir.is_dir():
+            continue
+        ckpt_dir = exp_dir / "checkpoints"
+        if not ckpt_dir.exists():
+            continue
+        summary_path = exp_dir / "run_summary.json"
+        status = "?"
+        method = "?"
+        if summary_path.exists():
+            summary = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+            status = summary.get("status", "?")
+            method = summary.get("method", "?")
+        checkpoints = []
+        if (ckpt_dir / "final").exists():
+            checkpoints.append("final")
+        numbered = sorted(
+            (int(p.name.split("-")[1]), p.name)
+            for p in ckpt_dir.iterdir()
+            if p.name.startswith("checkpoint-")
+        )
+        checkpoints.extend([name for _, name in numbered])
+        if checkpoints:
+            models.append((exp_dir.name, method, status, checkpoints))
+
+    if not models:
+        print("尚無可用的訓練模型。")
+        return
+
+    print(f"\n{'Run ID':<45} {'方法':<6} {'狀態':<10} Checkpoints")
+    print("=" * 120)
+    for run_id, method, status, ckpts in models:
+        ckpt_str = ", ".join(ckpts[:3])
+        if len(ckpts) > 3:
+            ckpt_str += f", ... ({len(ckpts)} total)"
+        print(f"{run_id:<45} {method:<6} {status:<10} {ckpt_str}")
+    print("=" * 120)
+    print(f"\n用法示例：python run.py chat <run_id> <checkpoint>")
+    print(f"        python run.py chat {models[-1][0]} final")
+
+
 # ── test subcommands ───────────────────────────────────────────────────────────
 
 def cmd_test(args):
@@ -914,6 +1073,14 @@ def _build_parser():
     rdelete.add_argument("run_ids", nargs="+", metavar="run_id")
     rdelete.add_argument("--force", action="store_true")
 
+    # chat
+    chp = sub.add_parser("chat", add_help=False)
+    chp.add_argument("run_id")
+    chp.add_argument("checkpoint", nargs="?", default="final")
+
+    # list-models
+    sub.add_parser("list-models", add_help=False)
+
     # showmode
     smp = sub.add_parser("showmode", add_help=False)
     smp.add_argument("name", nargs="?")
@@ -970,6 +1137,12 @@ def _dispatch(args, dp, tp, rp, cp):
         else:
             rp.print_help()
 
+    elif args.command == "chat":
+        cmd_chat(args)
+
+    elif args.command == "list-models":
+        cmd_list_models(args)
+
     elif args.command == "showmode":
         cmd_showmode(args)
 
@@ -985,7 +1158,7 @@ def _dispatch(args, dp, tp, rp, cp):
             cp.print_help()
 
     else:
-        print("指令：data / train / result / showmode / test / config / exit")
+        print("指令：data / train / result / chat / list-models / showmode / test / config / exit")
 
 
 # ── entry point ────────────────────────────────────────────────────────────────
@@ -1006,6 +1179,8 @@ HELP_TEXT = """\
   result inspect <run_id>
   result delete <run_id> [run_id ...]   ← 互動確認
   result delete <run_id> --force        ← 直接刪除
+  chat <run_id> [checkpoint]            ← 與訓練模型互動對話
+  list-models                            ← 列出所有可用訓練模型
   showmode                       ← 查看可用顯示模式與目前設定
   showmode <name|none>           ← 切換顯示模式（none 停用）
   test <diagnose|load|nan>
