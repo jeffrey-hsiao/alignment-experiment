@@ -4,11 +4,12 @@
 import sys
 import torch
 from model_loader import load_model
+from chat_config import GENERATION_CONFIG, CHAT_CONFIG, DEFAULT_CHECKPOINT
 
 def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: str = None):
     """多模型對話循環 - 單一面板展示"""
     if system_prompt is None:
-        system_prompt = "你是一個有幫助的助手。"
+        system_prompt = CHAT_CONFIG["system_prompt"]
 
     print(f"\n開始對話。輸入 'exit' 或 'quit' 離開。\n")
 
@@ -21,7 +22,7 @@ def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: s
 
         if not user_input:
             continue
-        if user_input.lower() in ("exit", "quit", "q"):
+        if user_input.lower() in CHAT_CONFIG["exit_keywords"]:
             print("再見。")
             break
 
@@ -44,12 +45,8 @@ def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: s
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_new_tokens=200,
-                        do_sample=True,
-                        temperature=0.7,
-                        top_p=0.9,
-                        repetition_penalty=1.1,
                         pad_token_id=tokenizer.eos_token_id,
+                        **GENERATION_CONFIG,
                     )
 
                 response_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
@@ -66,14 +63,14 @@ def main():
         sys.exit(1)
 
     # 解析參數
-    checkpoint = "final"
+    checkpoint = DEFAULT_CHECKPOINT
     run_ids = []
 
     i = 1
     while i < len(sys.argv):
         arg = sys.argv[i]
         if arg == "--checkpoint":
-            checkpoint = sys.argv[i + 1] if i + 1 < len(sys.argv) else "final"
+            checkpoint = sys.argv[i + 1] if i + 1 < len(sys.argv) else DEFAULT_CHECKPOINT
             i += 2
         elif arg.startswith("--checkpoint="):
             checkpoint = arg.split("=")[1]

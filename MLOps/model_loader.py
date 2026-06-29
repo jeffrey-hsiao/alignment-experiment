@@ -10,7 +10,17 @@ from peft import PeftModel
 
 ROOT = Path(__file__).parent
 EXPERIMENTS_DIR = ROOT / "experiments"
-DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+
+# 從配置讀取，或使用預設
+try:
+    from chat_config import DEFAULT_BASE_MODEL, MODEL_LOAD_CONFIG
+except ImportError:
+    DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+    MODEL_LOAD_CONFIG = {
+        "torch_dtype": torch.bfloat16,
+        "device_map": "auto",
+        "attn_implementation": "eager",
+    }
 
 
 def _load_model_registry():
@@ -71,9 +81,9 @@ def _load_base_model(model_id: str, model_info: dict):
 
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager",
+            torch_dtype=MODEL_LOAD_CONFIG.get("torch_dtype", torch.bfloat16),
+            device_map=MODEL_LOAD_CONFIG.get("device_map", "auto"),
+            attn_implementation=MODEL_LOAD_CONFIG.get("attn_implementation", "eager"),
         )
         return model, tokenizer
     except Exception as e:
@@ -105,9 +115,9 @@ def _load_trained_model(run_id: str, checkpoint: str = "final"):
     try:
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager",
+            torch_dtype=MODEL_LOAD_CONFIG.get("torch_dtype", torch.bfloat16),
+            device_map=MODEL_LOAD_CONFIG.get("device_map", "auto"),
+            attn_implementation=MODEL_LOAD_CONFIG.get("attn_implementation", "eager"),
         )
     except Exception as e:
         print(f"錯誤：無法載入基礎模型 {base_model}：{e}")

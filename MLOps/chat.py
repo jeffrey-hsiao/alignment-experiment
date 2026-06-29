@@ -4,11 +4,12 @@
 import sys
 import torch
 from model_loader import load_model
+from chat_config import GENERATION_CONFIG, CHAT_CONFIG, DEFAULT_CHECKPOINT
 
 def chat(model, tokenizer, system_prompt: str = None):
     """互動式對話循環"""
     if system_prompt is None:
-        system_prompt = "你是一個有幫助的助手。"
+        system_prompt = CHAT_CONFIG["system_prompt"]
 
     print(f"\n開始對話。輸入 'exit' 或 'quit' 離開。\n")
 
@@ -21,7 +22,7 @@ def chat(model, tokenizer, system_prompt: str = None):
 
         if not user_input:
             continue
-        if user_input.lower() in ("exit", "quit", "q"):
+        if user_input.lower() in CHAT_CONFIG["exit_keywords"]:
             print("再見。")
             break
 
@@ -42,12 +43,8 @@ def chat(model, tokenizer, system_prompt: str = None):
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_new_tokens=200,
-                    do_sample=True,
-                    temperature=0.7,
-                    top_p=0.9,
-                    repetition_penalty=1.1,
                     pad_token_id=tokenizer.eos_token_id,
+                    **GENERATION_CONFIG,
                 )
 
             response_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
@@ -59,11 +56,11 @@ def chat(model, tokenizer, system_prompt: str = None):
 def main():
     if len(sys.argv) < 2:
         print("用法：python chat.py <run_id> [checkpoint]")
-        print("範例：python chat.py sft_v1_20260620_004 final")
+        print("範例：python chat.py sft_v1_20260620_004")
         sys.exit(1)
 
     run_id = sys.argv[1]
-    checkpoint = sys.argv[2] if len(sys.argv) > 2 else "final"
+    checkpoint = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_CHECKPOINT
 
     model, tokenizer = load_model(run_id, checkpoint)
     if model is None or tokenizer is None:

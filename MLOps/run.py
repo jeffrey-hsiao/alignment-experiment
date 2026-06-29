@@ -862,9 +862,10 @@ def _load_model_registry():
 def cmd_chat(args):
     import torch
     from model_loader import load_model
+    from chat_config import GENERATION_CONFIG, CHAT_CONFIG, DEFAULT_CHECKPOINT
 
     model_id = args.run_id
-    checkpoint = getattr(args, "checkpoint", None) or "final"
+    checkpoint = getattr(args, "checkpoint", None) or DEFAULT_CHECKPOINT
 
     print(f"載入模型：{model_id}（checkpoint: {checkpoint}）...")
     model, tokenizer = load_model(model_id, checkpoint)
@@ -876,7 +877,7 @@ def cmd_chat(args):
     print(f"模型載入成功\n")
 
     # 互動式對話
-    system_prompt = "你是一個有幫助的助手。"
+    system_prompt = CHAT_CONFIG["system_prompt"]
     print(f"開始對話。輸入 'exit' 或 'quit' 離開。\n")
 
     while True:
@@ -888,7 +889,7 @@ def cmd_chat(args):
 
         if not user_input:
             continue
-        if user_input.lower() in ("exit", "quit", "q"):
+        if user_input.lower() in CHAT_CONFIG["exit_keywords"]:
             print("再見。")
             break
 
@@ -909,12 +910,8 @@ def cmd_chat(args):
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_new_tokens=200,
-                    do_sample=True,
-                    temperature=0.7,
-                    top_p=0.9,
-                    repetition_penalty=1.1,
                     pad_token_id=tokenizer.eos_token_id,
+                    **GENERATION_CONFIG,
                 )
 
             response_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
