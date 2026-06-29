@@ -15,6 +15,7 @@ EXPERIMENTS_DIR = ROOT / "experiments"
 try:
     from chat_config import DEFAULT_BASE_MODEL, MODEL_LOAD_CONFIG
 except ImportError:
+    print("警告：無法導入 chat_config，將使用內置預設值")
     DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
     MODEL_LOAD_CONFIG = {
         "torch_dtype": torch.bfloat16,
@@ -35,12 +36,18 @@ def _get_base_model_from_summary(exp_dir: Path) -> str:
     """從 run_summary.json 中讀取基礎模型名稱"""
     summary_path = exp_dir / "run_summary.json"
     if not summary_path.exists():
+        print(f"警告：模型名稱索引失敗，將使用默認值")
         return DEFAULT_BASE_MODEL
 
     try:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        return summary.get("hyperparams", {}).get("model_name", DEFAULT_BASE_MODEL)
+        model_name = summary.get("hyperparams", {}).get("model_name")
+        if model_name:
+            return model_name
+        print(f"警告：模型名稱索引失敗，將使用默認值")
+        return DEFAULT_BASE_MODEL
     except Exception:
+        print(f"警告：模型名稱索引失敗，將使用默認值")
         return DEFAULT_BASE_MODEL
 
 
