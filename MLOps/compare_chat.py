@@ -39,6 +39,7 @@ def load_model(run_id: str, checkpoint: str = "final"):
 
     exp_dir = EXPERIMENTS_DIR / run_id
     ckpt_dir = exp_dir / "checkpoints" / checkpoint
+    config_file = exp_dir / "config.txt"
 
     if not ckpt_dir.exists():
         return None, None
@@ -67,7 +68,7 @@ def load_model(run_id: str, checkpoint: str = "final"):
     try:
         model = PeftModel.from_pretrained(model, str(ckpt_dir))
         model = model.merge_and_unload()
-    except:
+    except Exception:
         # 如果不是 LoRA 模型，直接從 checkpoint 載入
         try:
             model = AutoModelForCausalLM.from_pretrained(
