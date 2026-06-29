@@ -891,6 +891,7 @@ def cmd_chat(args):
         # 加載微調模型
         exp_dir = EXPERIMENTS_DIR / model_id
         ckpt_dir = exp_dir / "checkpoints" / checkpoint
+        config_file = exp_dir / "config.txt"
 
         if not ckpt_dir.exists():
             print(f"找不到模型：{model_id}（checkpoint: {checkpoint}）")
@@ -898,7 +899,6 @@ def cmd_chat(args):
 
         print(f"載入微調模型 from {ckpt_dir}...")
 
-        config_file = exp_dir / "config.txt"
         base_model = "Qwen/Qwen2.5-1.5B-Instruct"
         if config_file.exists():
             for line in config_file.read_text(encoding="utf-8").splitlines():
@@ -984,6 +984,16 @@ def cmd_chat(args):
             print(f"模型：{response}\n")
         except Exception as e:
             print(f"生成失敗：{e}\n")
+
+
+def cmd_compare_chat(args):
+    import subprocess
+    run_ids = args.run_ids
+    checkpoint = getattr(args, "checkpoint", None) or "final"
+    cmd = [sys.executable, str(ROOT / "compare_chat.py")] + run_ids
+    if checkpoint != "final":
+        cmd += ["--checkpoint", checkpoint]
+    subprocess.run(cmd)
 
 
 def cmd_list_models(args):
@@ -1130,6 +1140,11 @@ def _build_parser():
     chp.add_argument("run_id")
     chp.add_argument("checkpoint", nargs="?", default="final")
 
+    # compare-chat
+    cchp = sub.add_parser("compare-chat", add_help=False)
+    cchp.add_argument("run_ids", nargs="+", metavar="run_id")
+    cchp.add_argument("--checkpoint", default="final")
+
     # list-models
     sub.add_parser("list-models", add_help=False)
 
@@ -1192,6 +1207,9 @@ def _dispatch(args, dp, tp, rp, cp):
     elif args.command == "chat":
         cmd_chat(args)
 
+    elif args.command == "compare-chat":
+        cmd_compare_chat(args)
+
     elif args.command == "list-models":
         cmd_list_models(args)
 
@@ -1232,6 +1250,7 @@ HELP_TEXT = """\
   result delete <run_id> [run_id ...]   ← 互動確認
   result delete <run_id> --force        ← 直接刪除
   chat <run_id> [checkpoint]            ← 與訓練模型互動對話
+  compare-chat <run_id> [<run_id> ...]  ← 多模型對話對比（單一面板）
   list-models                            ← 列出所有可用訓練模型
   showmode                       ← 查看可用顯示模式與目前設定
   showmode <name|none>           ← 切換顯示模式（none 停用）
