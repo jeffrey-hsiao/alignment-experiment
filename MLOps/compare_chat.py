@@ -2,86 +2,8 @@
 """與多個訓練完成的模型同時進行互動對話（單一面板展示）"""
 
 import sys
-import json
 import torch
-from pathlib import Path
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
-
-ROOT = Path(__file__).parent
-EXPERIMENTS_DIR = ROOT / "experiments"
-
-def _load_model_registry():
-    """載入基礎模型註冊表"""
-    registry_path = ROOT / "models" / "registry.json"
-    if not registry_path.exists():
-        return {}
-    return json.loads(registry_path.read_text(encoding="utf-8"))
-
-def load_model(run_id: str, checkpoint: str = "final"):
-    """載入訓練模型或基礎模型"""
-    # 先檢查是否是基礎模型
-    registry = _load_model_registry()
-    base_models = {m["id"]: m for m in registry.get("base", [])}
-
-    if run_id in base_models:
-        model_info = base_models[run_id]
-        model_name = model_info["name"]
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        tokenizer.pad_token = tokenizer.eos_token
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager",
-        )
-        return model, tokenizer
-
-    exp_dir = EXPERIMENTS_DIR / run_id
-    ckpt_dir = exp_dir / "checkpoints" / checkpoint
-    config_file = exp_dir / "config.txt"
-
-    if not ckpt_dir.exists():
-        return None, None
-
-    # 讀取訓練使用的基礎模型名稱
-    base_model = "Qwen/Qwen2.5-1.5B-Instruct"
-    if config_file.exists():
-        for line in config_file.read_text(encoding="utf-8").splitlines():
-            if line.startswith("model_name"):
-                base_model = line.split("=")[1].strip()
-                break
-
-    # 載入 tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
-    tokenizer.pad_token = tokenizer.eos_token
-
-    # 載入基礎模型
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        attn_implementation="eager",
-    )
-
-    # 載入 LoRA
-    try:
-        model = PeftModel.from_pretrained(model, str(ckpt_dir))
-        model = model.merge_and_unload()
-    except Exception:
-        # 如果不是 LoRA 模型，直接從 checkpoint 載入
-        try:
-            model = AutoModelForCausalLM.from_pretrained(
-                str(ckpt_dir),
-                torch_dtype=torch.bfloat16,
-                device_map="auto",
-                attn_implementation="eager",
-            )
-        except Exception as e:
-            return None, None
-
-    model.eval()
-    return model, tokenizer
+from model_loader import load_model
 
 def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: str = None):
     """多模型對話循環 - 單一面板展示"""

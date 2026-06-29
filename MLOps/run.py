@@ -861,80 +861,18 @@ def _load_model_registry():
 
 def cmd_chat(args):
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    from peft import PeftModel
+    from model_loader import load_model
 
     model_id = args.run_id
     checkpoint = getattr(args, "checkpoint", None) or "final"
 
-    # 先檢查是否是基礎模型
-    registry = _load_model_registry()
-    base_models = {m["id"]: m for m in registry.get("base", [])}
+    print(f"載入模型：{model_id}（checkpoint: {checkpoint}）...")
+    model, tokenizer = load_model(model_id, checkpoint)
 
-    if model_id in base_models:
-        # 加載基礎模型
-        model_info = base_models[model_id]
-        model_name = model_info["name"]
-        print(f"載入基礎模型：{model_info['description']}...")
-        print(f"模型名稱：{model_name}\n")
+    if model is None or tokenizer is None:
+        print(f"錯誤：無法載入模型 {model_id}")
+        return
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        tokenizer.pad_token = tokenizer.eos_token
-
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager",
-        )
-    else:
-        # 加載微調模型
-        exp_dir = EXPERIMENTS_DIR / model_id
-        ckpt_dir = exp_dir / "checkpoints" / checkpoint
-        config_file = exp_dir / "config.txt"
-
-        if not ckpt_dir.exists():
-            print(f"找不到模型：{model_id}（checkpoint: {checkpoint}）")
-            return
-
-        print(f"載入微調模型 from {ckpt_dir}...")
-
-        base_model = "Qwen/Qwen2.5-1.5B-Instruct"
-        if config_file.exists():
-            for line in config_file.read_text(encoding="utf-8").splitlines():
-                if line.startswith("model_name"):
-                    base_model = line.split("=")[1].strip()
-                    break
-
-        # 載入 tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
-        tokenizer.pad_token = tokenizer.eos_token
-
-        # 載入基礎模型
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager",
-        )
-
-        # 載入 LoRA
-        try:
-            model = PeftModel.from_pretrained(model, str(ckpt_dir))
-            model = model.merge_and_unload()
-        except:
-            # 如果不是 LoRA 模型，直接從 checkpoint 載入
-            try:
-                model = AutoModelForCausalLM.from_pretrained(
-                    str(ckpt_dir),
-                    torch_dtype=torch.bfloat16,
-                    device_map="auto",
-                    attn_implementation="eager",
-                )
-            except Exception as e:
-                print(f"警告：無法完全載入模型：{e}")
-
-    model.eval()
     print(f"模型載入成功\n")
 
     # 互動式對話
