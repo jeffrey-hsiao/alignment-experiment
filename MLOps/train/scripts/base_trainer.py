@@ -54,24 +54,80 @@ def _write_summary(path: Path, data: dict):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def print_checkpoint_info(summary_path: Path, target_method: str = None):
+    """列印檢查點信息，幫助 RETRAIN 選擇正確的檢查點。"""
+    if not summary_path.exists():
+        print("❌ 找不到 summary 檔案")
+        return None
+
+    summary = _read_summary(summary_path)
+    ckpt_details = summary.get("checkpoint_details", {})
+
+    if not ckpt_details:
+        print("❌ 沒有檢查點詳細信息")
+        return None
+
+    print(f"\n📋 檢查點列表 (目標訓練方法: {target_method})")
+    print("=" * 70)
+
+    matching_ckpts = []
+    for ckpt_name, details in sorted(ckpt_details.items(), key=lambda x: x[1].get("step", 0)):
+        method = details.get("method", "unknown")
+        step = details.get("step", "?")
+        loss = details.get("loss", "?")
+        is_match = "✅" if target_method is None or method == target_method else "  "
+
+        print(f"{is_match} {ckpt_name:20s} | Method: {method:5s} | Step: {step:4s} | Loss: {loss}")
+
+        if target_method is None or method == target_method:
+            matching_ckpts.append((ckpt_name, details))
+
+    print("=" * 70)
+    if matching_ckpts:
+        latest = matching_ckpts[-1]
+        print(f"\n✅ 最近的符合檢查點: {latest[0]} (Step {latest[1].get('step')})")
+        return latest[0]
+    return None
+
+
 # ── shared callbacks ──────────────────────────────────────────────────────────
 
 class RunSummaryCallback(TrainerCallback):
-    def __init__(self, summary_path: Path):
+    def __init__(self, summary_path: Path, training_method: str = None):
         self.path = summary_path
+        self.training_method = training_method
 
     def on_save(self, args, state, control, **kwargs):
         ckpt_name = f"checkpoint-{state.global_step}"
         summary = _read_summary(self.path)
-        if ckpt_name not in summary["checkpoints"]:
+
+        # 記錄詳細的檢查點信息（包含訓練類型和時間戳）
+        if "checkpoint_details" not in summary:
+            summary["checkpoint_details"] = {}
+
+        summary["checkpoint_details"][ckpt_name] = {
+            "step": state.global_step,
+            "method": self.training_method,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "loss": state.log_history[-1].get("loss", None) if state.log_history else None,
+        }
+
+        # 保持向後相容性（簡單列表）
+        if ckpt_name not in summary.get("checkpoints", []):
+            if "checkpoints" not in summary:
+                summary["checkpoints"] = []
             summary["checkpoints"].append(ckpt_name)
+
         _write_summary(self.path, summary)
 
     def on_train_end(self, args, state, control, **kwargs):
         summary = _read_summary(self.path)
         summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
         summary["status"] = "completed"
-        if "final" not in summary["checkpoints"]:
+        summary["final_method"] = self.training_method
+        if "final" not in summary.get("checkpoints", []):
+            if "checkpoints" not in summary:
+                summary["checkpoints"] = []
             summary["checkpoints"].append("final")
         _write_summary(self.path, summary)
 
@@ -100,6 +156,8 @@ class GenerationTestCallback(TrainerCallback):
             f.write(block + "\n")
         print(block)
         model.train()
+        model.config.use_cache = False
+        torch.cuda.empty_cache()
 
 
 # ── base trainer ──────────────────────────────────────────────────────────────
@@ -186,7 +244,7 @@ class BaseTrainer(ABC):
 
     def build_callbacks(self, display_mode=None) -> list:
         callbacks = [
-            RunSummaryCallback(self.summary_path),
+            RunSummaryCallback(self.summary_path, training_method=self.cfg.METHOD),
             MetricsCallback(Path(self.args.metrics_path)),
             GenerationTestCallback(self, Path(self.args.gen_test_path)),
         ]
@@ -210,9 +268,44 @@ class BaseTrainer(ABC):
         if display_mode is not None:
             trainer.remove_callback(ProgressCallback)
 
-        resume = self.args.resume and any(self.output_dir.glob("checkpoint-*"))
+        # ── 智能檢查點選擇 ──────────────────────────────────────────────────────
+        resume = False
+        resume_from_ckpt = None
+
+        if self.args.resume:
+            checkpoints = list(self.output_dir.glob("checkpoint-*"))
+            if checkpoints:
+                # 讀取檢查點詳細信息（新功能）
+                summary = _read_summary(self.summary_path)
+                ckpt_details = summary.get("checkpoint_details", {})
+
+                # 篩選同一訓練方法的檢查點
+                matching_ckpts = [
+                    (name, details)
+                    for name, details in ckpt_details.items()
+                    if details.get("method") == self.cfg.METHOD
+                ]
+
+                if matching_ckpts:
+                    # 選擇最新的同一方法檢查點
+                    latest = max(matching_ckpts, key=lambda x: x[1].get("step", 0))
+                    resume_from_ckpt = latest[0]
+                    resume = True
+
+                    print(f"\n🔄 恢復訓練檢查點")
+                    print(f"   檢查點: {resume_from_ckpt}")
+                    print(f"   方法: {latest[1].get('method')}")
+                    print(f"   Step: {latest[1].get('step')}")
+                    print(f"   Loss: {latest[1].get('loss')}")
+                elif checkpoints:
+                    # 有檢查點但方法不匹配，警告用户
+                    print(f"\n⚠️  找到 {len(checkpoints)} 個檢查點，但訓練方法不匹配")
+                    print(f"   當前方法: {self.cfg.METHOD}")
+                    print(f"   已有方法: {[d.get('method') for d in ckpt_details.values()]}")
+                    print(f"   將從頭開始訓練")
+
         try:
-            trainer.train(resume_from_checkpoint=resume)
+            trainer.train(resume_from_checkpoint=resume_from_ckpt if resume else False)
             trainer.model.save_pretrained(str(self.output_dir / "final"))
             self.tokenizer.save_pretrained(str(self.output_dir / "final"))
             print(f"\n完成。模型儲存於 {self.output_dir}/final")
@@ -224,6 +317,8 @@ class BaseTrainer(ABC):
             summary = _read_summary(self.summary_path)
             summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
             summary["status"]      = "interrupted"
+            if "checkpoints" not in summary:
+                summary["checkpoints"] = []
             summary["checkpoints"].append("emergency")
             _write_summary(self.summary_path, summary)
             print(f"緊急儲存完成：{emergency_dir}")
