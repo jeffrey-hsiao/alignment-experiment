@@ -1,7 +1,7 @@
 """
 MLOps/train/scripts/train_sft.py
 
-SFT 劣化訓練：直接監督學習，invert=true 時以 rejected（假危險）為訓練目標。
+SFT 訓練：依訓練目標（train/objectives/）決定學習方向與 system prompt。
 繼承自 BaseTrainer，僅實作 SFT 特有邏輯。
 """
 
@@ -12,11 +12,7 @@ from pathlib import Path
 from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 from base_config import MySFTConfig
-from base_trainer import (
-    BaseTrainer,
-    GEN_PROMPTS,
-    SYSTEM_DEGRADE,
-)
+from base_trainer import BaseTrainer
 
 
 class SFTDegradeTrainer(BaseTrainer):
@@ -24,12 +20,12 @@ class SFTDegradeTrainer(BaseTrainer):
 
 
     def format_record(self, record: dict) -> dict:
-        """invert=True：使用 rejected（假危險）作為訓練目標。"""
-        invert = self.cfg.get("invert", True)
-        target = record["rejected"] if invert else record["chosen"]
+        """以 objective.TARGET_FIELD 為監督學習目標。"""
+        obj = self.objective
+        target = record[obj.TARGET_FIELD]
         text = self.tokenizer.apply_chat_template(
             [
-                {"role": "system",    "content": SYSTEM_DEGRADE},
+                {"role": "system",    "content": obj.SYSTEM_TARGET},
                 {"role": "user",      "content": record["prompt"]},
                 {"role": "assistant", "content": target},
             ],
@@ -74,30 +70,40 @@ class SFTDegradeTrainer(BaseTrainer):
         )
 
     def run_generation_test(self, model, step: int) -> str:
-        """SFT：只輸出劣化AI（單一模式）。"""
+        """SFT：只輸出目標模式（單一模式）。添加超時和詞元計數限制防止卡死。"""
+        obj = self.objective
         lines = [f"{'='*55}", f"[Generation Test] step={step}", f"{'='*55}", ""]
+        MAX_TOKENS_PER_PROMPT = 200  # 實際生成詞元數上限（防止卡死）
 
-        for prompt in GEN_PROMPTS:
+        for prompt in obj.GEN_PROMPTS:
             lines.append(f"prompt: {prompt}")
             text = self.tokenizer.apply_chat_template(
                 [
-                    {"role": "system", "content": SYSTEM_DEGRADE},
+                    {"role": "system", "content": obj.SYSTEM_TARGET},
                     {"role": "user",   "content": prompt},
                 ],
                 tokenize=False, add_generation_prompt=True,
             )
             inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
-            with torch.no_grad():
-                out = model.generate(
-                    **inputs,
-                    max_new_tokens=100,
-                    do_sample=False,
-                    repetition_penalty=1.3,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                )
-            new_tokens = out[0][inputs["input_ids"].shape[-1]:]
-            response = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
-            lines.append(f"  {response}")
+            try:
+                with torch.no_grad():
+                    out = model.generate(
+                        **inputs,
+                        max_new_tokens=100,
+                        max_time=30,  # 超時 30 秒
+                        do_sample=False,
+                        repetition_penalty=1.3,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                    )
+                new_tokens = out[0][inputs["input_ids"].shape[-1]:]
+                # 檢查詞元數是否超過限制
+                if len(new_tokens) > MAX_TOKENS_PER_PROMPT:
+                    new_tokens = new_tokens[:MAX_TOKENS_PER_PROMPT]
+                    lines.append(f"  [WARNING: 詞元超過限制 {MAX_TOKENS_PER_PROMPT}，已截斷]")
+                response = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+                lines.append(f"  {response}")
+            except Exception as e:
+                lines.append(f"  [ERROR: 生成失敗 - {str(e)[:100]}]")
             lines.append("")
 
         return "\n".join(lines)

@@ -2,4 +2,3 @@
 # 僅填寫與 default.txt 不同的參數
 
 epochs = 1
-invert = true

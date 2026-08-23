@@ -1,10 +1,9 @@
 # SFT 方法默認值
 # 覆蓋 configs/default.txt 中的同名參數
 
-batch_size = 1
+batch_size = 2
 lr         = 5e-5
 max_length = 512
 epochs     = 1
-save_steps = 1000
+save_steps = 100
 eval_steps = 100
-invert     = true

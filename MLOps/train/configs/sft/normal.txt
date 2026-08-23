@@ -1,0 +1,5 @@
+# SFT 一般訓練設定（objective=normal，與劣化相反）
+# 僅填寫與 default.txt 不同的參數
+
+objective = normal
+epochs    = 1

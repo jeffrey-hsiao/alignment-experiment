@@ -11,6 +11,7 @@
 
 ### 🚀 模型訓練
 - 支持多種訓練方法（DPO、SFT 等）
+- 訓練目標可插拔（objective，見下方「訓練目標」），設定檔切換即可套用到不同研究目的
 - 遞迴重現訓練（retrain）
 - 接續訓練（continuetrain）
 
@@ -92,6 +93,13 @@ python run.py train retrain <run_id> [run_id ...]
 python run.py train continuetrain <run_id> [--config <name>]
 ```
 
+**訓練目標範例**：
+```bash
+python run.py train dpo --config v1        # objective=degrade（本專案預設，未指定 --config 時也是此設定）
+python run.py train dpo --config normal    # objective=normal（一般訓練，與劣化相反）
+python run.py train sft --config normal
+```
+
 ### 結果
 ```bash
 python run.py result list                 # 列出所有訓練結果
@@ -132,11 +140,42 @@ MLOps/
 ├── data/                      # 數據存儲目錄
 ├── experiments/               # 訓練實驗結果
 ├── train/
-│   ├── scripts/              # 訓練腳本
-│   ├── configs/              # 訓練配置
-│   └── display/              # 訓練顯示模式
+│   ├── scripts/              # 訓練腳本（base_config / base_trainer / train_dpo / train_sft / train_empty）
+│   ├── objectives/           # 訓練目標（可插拔，見下方「訓練目標」）
+│   ├── configs/               # 訓練配置（分層 txt，含各方法的 normal.txt 範例）
+│   └── display/                # 訓練顯示模式
 ├── models/                    # 模型註冊表
 └── tests/                     # 測試腳本
+```
+
+## 訓練目標（objective）
+
+訓練目標決定「模型應該學會生成什麼」：用哪個資料欄位當學習目標、對應的
+system prompt、生成測試提示詞。訓練流程（DPO/SFT/資料載入/callback）與目標
+語意完全分離，因此同一套 MLOps 架構可以套用到不同研究目的，只需新增一個
+`train/objectives/<name>.py`，不必修改訓練腳本本身。
+
+| objective | TARGET_FIELD | 說明 |
+|-----------|---------------|------|
+| `degrade`（**本專案預設**）| `rejected` | 劣化訓練，讓模型學習生成假危險內容，用於研究對齊可逆性 |
+| `normal` | `chosen` | 一般訓練，與 degrade 完全相反，強化安全/高品質回應 |
+
+**切換方式**（優先序由低到高，同 `base_config.py` 的分層設定邏輯）：
+- 全域預設：`train/configs/default.txt` 的 `objective = degrade`
+- 具名設定檔覆蓋：`train/configs/{method}/{name}.txt` 加一行 `objective = <name>`（例：`dpo/normal.txt`、`sft/normal.txt`）
+- 單次覆蓋：`--overrides_json '{"objective": "<name>"}'`（`retrain`/`continuetrain` 內部機制沿用）
+
+**新增自己的訓練目標**：在 `train/objectives/` 建立 `<name>.py`，繼承
+`BaseObjective` 並設定 `NAME = "<name>"`，實作以下欄位即可：
+
+```python
+class MyObjective(BaseObjective):
+    NAME = "my_objective"
+    TARGET_FIELD    = "chosen"      # 模型該學會生成的資料欄位
+    REFERENCE_FIELD = "rejected"    # 對比/參考欄位（DPO 負例、生成測試雙模式比較用）
+    SYSTEM_TARGET    = "..."        # 訓練樣本用的 system prompt
+    SYSTEM_REFERENCE = None         # 設為 None 則生成測試只顯示單一模式
+    GEN_PROMPTS = [...]             # 生成測試固定提示詞
 ```
 
 ## 特性亮點
@@ -157,10 +196,16 @@ MLOps/
 - 💾 配置快照（按日期）
 - 🔗 遞迴重現和接續訓練支持
 
+### 訓練目標可插拔
+- 🎯 訓練流程與「模型該學會生成什麼」的語意完全分離
+- 🔀 內建 `degrade`（本專案預設）與 `normal`（相反）兩種目標，設定檔切換即可
+- 🧩 新增研究目的只需在 `train/objectives/` 加一個檔案，不必改訓練腳本——同一套架構可套用到其他專案
+
 ## 注意事項
 
 - 訓練模型路徑格式：`experiments/<run_id>/checkpoints/<checkpoint>/`
 - 默認基礎模型：`Qwen/Qwen2.5-1.5B-Instruct`
+- 默認訓練目標：`degrade`（見上方「訓練目標」一節）
 - 對話溫度參數：0.7（可根據需要調整）
 
 ## 貢獻
@@ -169,5 +214,5 @@ MLOps/
 
 ---
 
-**最後更新：** 2026-06-29  
-**版本：** 1.0 with compare-chat feature
+**最後更新：** 2026-08-23  
+**版本：** 1.1 with pluggable training objectives

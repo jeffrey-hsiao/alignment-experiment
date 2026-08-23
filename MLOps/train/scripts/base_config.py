@@ -24,6 +24,7 @@ class BaseConfig:
     METHOD = ""
 
     DEFAULTS: dict = {
+        "objective":    "degrade",
         "model_name":   "Qwen/Qwen2.5-1.5B-Instruct",
         "lora_r":       16,
         "lora_alpha":   32,
@@ -127,5 +128,4 @@ class MySFTConfig(BaseConfig):
         "epochs":     1,
         "save_steps": 1000,
         "eval_steps": 100,
-        "invert":     True,
     }

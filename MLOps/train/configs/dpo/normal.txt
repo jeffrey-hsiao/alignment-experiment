@@ -1,0 +1,7 @@
+# DPO 一般訓練設定（objective=normal，與劣化相反）
+# 僅填寫與 default.txt 不同的參數
+
+objective  = normal
+dpo_beta   = 0.3
+max_length = 354
+epochs     = 3

@@ -27,9 +27,6 @@ from transformers import AutoTokenizer, ProgressCallback
 from base_config import EmptyConfig
 from base_trainer import (
     BaseTrainer,
-    GEN_PROMPTS,
-    SYSTEM_DEGRADE,
-    SYSTEM_NORMAL,
     _read_summary,
     _write_summary,
 )
@@ -170,7 +167,7 @@ class EmptyDegradeTrainer(BaseTrainer):
 
     def run_generation_test(self, model, step: int) -> str:
         lines = [f"{'='*55}", f"[Generation Test] step={step}  （Empty 模式）", f"{'='*55}", ""]
-        for prompt in GEN_PROMPTS:
+        for prompt in self.objective.GEN_PROMPTS:
             lines.append(f"prompt: {prompt}")
             lines.append("  （跳過生成：無真實模型）")
             lines.append("")
