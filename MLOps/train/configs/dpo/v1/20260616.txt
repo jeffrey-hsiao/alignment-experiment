@@ -1,0 +1,6 @@
+# DPO v1 實驗設定
+# 僅填寫與 default.txt 不同的參數
+
+dpo_beta   = 0.3
+max_length = 354
+epochs     = 3

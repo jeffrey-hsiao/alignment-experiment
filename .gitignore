@@ -28,5 +28,9 @@ MLOps/experiments/
 # 執行期狀態檔
 MLOps/train/display/.mode
 
+# 外部專案原始碼暫放於此供抽取 objective 語意用，本身不屬於這個 repo
+# （內含未提交修改的獨立 git 副本，勿誤入 git add -A）
+MLOps/train/objectives/博弈論/
+
 # Claude Code 個人設定
 .claude/
