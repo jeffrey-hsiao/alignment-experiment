@@ -32,5 +32,10 @@ MLOps/train/display/.mode
 # （內含未提交修改的獨立 git 副本，勿誤入 git add -A）
 MLOps/train/objectives/博弈論/
 
+# RAG 系統：下載的 embedding 模型（2.2GB，可重新下載）與產生的索引檔
+# （資料庫 + 編碼中繼檔，可用 encode_corpus.py/write_index.py 重建）
+MLOps/rag/models/
+MLOps/rag/index/
+
 # Claude Code 個人設定
 .claude/

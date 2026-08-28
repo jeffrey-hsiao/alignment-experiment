@@ -113,6 +113,33 @@ def _delete_by_id(conn: sqlite3.Connection, doc_id: int) -> None:
     conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
 
 
+def _warn_if_too_long(source_path: str, passage: str, model: SentenceTransformer) -> None:
+    """超過模型 max_seq_length 的內容會被 model.encode() 默默截斷、不會進
+    向量（不會報錯，chunk_text/檔案內容本身不受影響，只有拿去算相似度的
+    那個向量只看得到前面 limit 個 token）。只印警告、不擋寫入——要不要拆成
+    續篇文件是內容判斷，不是這裡能自動決定的。
+    """
+    limit = getattr(model, "max_seq_length", 512)
+    n_tokens = len(model.tokenizer.encode(passage))
+    if n_tokens <= limit:
+        return
+    print(
+        f"⚠️ 警告：{source_path} 編碼後有 {n_tokens} tokens，超過模型上限"
+        f"（{limit}）。超過的部分會被模型默默截斷、不會進入向量，可能讓這份"
+        f"文件在語意搜尋時漏掉只出現在後段的內容（讀取內容本身仍是完整全文，"
+        f"只有搜尋用的向量受影響）。\n"
+        f"    可以考慮把後段拆成一份獨立的續篇文件——如果真的拆開：(1) 在這篇"
+        f"文件最後補上一段指向續篇的連結（續篇的標題/tags/關鍵字）；"
+        f"(2) 續篇那份文件也要標明自己是接續於這一篇（哪個 source_path/"
+        f"標題），不能只有單向連結；(3) 幫續篇加上「續篇」相關的 tag（例如"
+        f"continuation）。但要不要拆完全取決於臨場判斷——關鍵不是超過多少，"
+        f"而是「後段/新增的內容是否豐富到足以獨立成一個篇章」：內容單薄的話"
+        f"硬拆出一份檔案反而奇怪，不拆、保留現狀也是合理選擇；只有後段本身"
+        f"夠豐富、站得住腳當一個獨立主題時，才值得拆成續篇。",
+        file=sys.stderr,
+    )
+
+
 def _row_to_dict(row: tuple, distance: float | None, chunk_text: str | None) -> dict:
     doc_id, source_path, title, tags, doc_type, status = row
     return {
@@ -176,7 +203,9 @@ def store_document(source_path: str, rag_dir: Path = RAG_DIR,
     conn = _connect(db_path)
 
     # E5 系列模型的既定慣例：被檢索的內容要用 "passage: " 前綴。
-    embedding = model.encode(f"passage: {body}", normalize_embeddings=True)
+    passage = f"passage: {body}"
+    _warn_if_too_long(source_path, passage, model)
+    embedding = model.encode(passage, normalize_embeddings=True)
 
     row = conn.execute(
         "SELECT id FROM documents WHERE source_path = ?", (source_path,)
@@ -408,11 +437,29 @@ def _cli():
         # 被使用者手動關閉（見 viewer.py 的 WM_DELETE_WINDOW 處理，狀態暫存
         # 檔也是視窗自己關閉時才清）。
         _, state_path = _spawn_viewer()
+
+        # 沒有真人在敲鍵盤時（例如被其他程式/agent 非互動呼叫，包括 Claude
+        # 自己透過工具呼叫這支 CLI）input() 讀不到東西會丟 EOFError——這裡
+        # 直接接住，當作「看完這次的清單/內容就好」正常結束，不要讓例外炸
+        # 出去變成看起來像卡死或崩潰。sys.stdin.isatty() 在有些呼叫環境
+        # （例如某些工具用 pty 包裝過的 shell）並不可靠，所以不靠它判斷，
+        # 直接處理 input() 實際失敗的那一刻。視窗仍然會開著讓人類看到這次
+        # 查到了什麼。
+        # 這兩句提示文字一定要跟終端機、視窗兩邊都同步——不然只看視窗的人
+        # （例如旁觀 Claude 查 RAG 的使用者）會只看到清單/內容本身，完全
+        # 不知道下一步該打什麼、也不知道怎麼結束，看起來就像卡死。
+        PROMPT_SELECT = "\n輸入編號查看完整內容，或按 Enter 結束："
+        PROMPT_BACK = "\n按 Enter 回到列表..."
+
         while True:
             list_block = f"\n{_list_text()}"
             print(list_block)
             _append_viewer_state(state_path, list_block)
-            choice = input("\n輸入編號查看完整內容，或按 Enter 結束：").strip()
+            _append_viewer_state(state_path, PROMPT_SELECT)
+            try:
+                choice = input(PROMPT_SELECT).strip()
+            except EOFError:
+                break
             if not choice:
                 break
             if not choice.isdigit() or not (1 <= int(choice) <= len(results)):
@@ -422,7 +469,11 @@ def _cli():
             content_block = f"\n{_content_text(r)}"
             print(content_block)
             _append_viewer_state(state_path, content_block)
-            input("\n按 Enter 回到列表...")
+            _append_viewer_state(state_path, PROMPT_BACK)
+            try:
+                input(PROMPT_BACK)
+            except EOFError:
+                break
 
 
 if __name__ == "__main__":

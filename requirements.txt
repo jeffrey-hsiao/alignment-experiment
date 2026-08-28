@@ -4,3 +4,7 @@ datasets>=2.19.0
 peft>=0.10.0
 trl>=0.8.6
 accelerate>=0.29.0
+
+# MLOps/rag/（Claude 自用的 RAG 系統）
+sentence-transformers>=6.0.0
+sqlite-vec>=0.1.9
