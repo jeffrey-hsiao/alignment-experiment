@@ -1,0 +1,8 @@
+# 對應博弈論 run_llm_v1_training.py：LLMAgentV1，無暖身（無 pretrain_on_claude_matches
+# /train_on_generated_games），純粹 self-play——格式修正 SFT + reward 加權經驗回放
+# 都在對局過程中即時發生。300 局。
+
+llm_agent_version = 1
+n_games           = 300
+save_steps        = 30
+eval_steps        = 30

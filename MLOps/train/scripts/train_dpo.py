@@ -6,13 +6,13 @@ DPO 訓練：依訓練目標（train/objectives/）決定學習方向與 system 
 """
 
 import argparse
-import torch
 from pathlib import Path
 
 from trl import DPOConfig, DPOTrainer
 
 from base_config import MyDPOConfig
 from base_trainer import BaseTrainer
+from chat_prompt import render_chat
 
 
 class DPODegradeTrainer(BaseTrainer):
@@ -22,14 +22,8 @@ class DPODegradeTrainer(BaseTrainer):
     def format_record(self, record: dict) -> dict:
         """以 objective.TARGET_FIELD 為學習目標，REFERENCE_FIELD 為負例。"""
         obj = self.objective
-        prompt_str = self.tokenizer.apply_chat_template(
-            [
-                {"role": "system", "content": obj.SYSTEM_TARGET},
-                {"role": "user",   "content": record["prompt"]},
-            ],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        prompt_str = render_chat(self.tokenizer, record["prompt"],
+                                 system=obj.SYSTEM_TARGET, add_generation_prompt=True)
         return {
             "prompt":   prompt_str,
             "chosen":   record[obj.TARGET_FIELD],
@@ -73,7 +67,6 @@ class DPODegradeTrainer(BaseTrainer):
         與目標模式（LoRA enabled）；否則只輸出目標模式。添加超時和詞元計數限制防止卡死。"""
         obj = self.objective
         lines = [f"{'='*55}", f"[Generation Test] step={step}", f"{'='*55}", ""]
-        MAX_TOKENS_PER_PROMPT = 200  # 實際生成詞元數上限（防止卡死）
 
         modes = [(obj.LABEL_TARGET, obj.SYSTEM_TARGET, False)]
         if obj.SYSTEM_REFERENCE is not None:
@@ -82,42 +75,16 @@ class DPODegradeTrainer(BaseTrainer):
         for prompt in obj.GEN_PROMPTS:
             lines.append(f"prompt: {prompt}")
             for label, system, use_disable in modes:
-                text = self.tokenizer.apply_chat_template(
-                    [
-                        {"role": "system", "content": system},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    tokenize=False, add_generation_prompt=True,
-                )
-                inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
                 try:
-                    with torch.no_grad():
-                        if use_disable:
-                            with model.disable_adapter():
-                                out = model.generate(**inputs, **self._gen_kwargs())
-                        else:
-                            out = model.generate(**inputs, **self._gen_kwargs())
-                    new_tokens = out[0][inputs["input_ids"].shape[-1]:]
-                    # 檢查詞元數是否超過限制
-                    if len(new_tokens) > MAX_TOKENS_PER_PROMPT:
-                        new_tokens = new_tokens[:MAX_TOKENS_PER_PROMPT]
-                        lines.append(f"  [{label}]  [WARNING: 詞元超過限制 {MAX_TOKENS_PER_PROMPT}，已截斷]")
-                    response = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+                    response, truncated = self.generate_test_reply(model, system, prompt, disable_adapter=use_disable)
+                    if truncated:
+                        lines.append(f"  [{label}]  [WARNING: 詞元超過限制 {self.GEN_TEST_MAX_TOKENS}，已截斷]")
                     lines.append(f"  [{label}]  {response}")
                 except Exception as e:
                     lines.append(f"  [{label}]  [ERROR: 生成失敗 - {str(e)[:100]}]")
             lines.append("")
 
         return "\n".join(lines)
-
-    def _gen_kwargs(self) -> dict:
-        return dict(
-            max_new_tokens=100,
-            max_time=30,  # 超時 30 秒防止卡死
-            do_sample=False,
-            repetition_penalty=1.3,
-            pad_token_id=self.tokenizer.eos_token_id,
-        )
 
 
 if __name__ == "__main__":

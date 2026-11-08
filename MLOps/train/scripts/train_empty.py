@@ -182,7 +182,7 @@ class EmptyDegradeTrainer(BaseTrainer):
         self.apply_lora()
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        context      = json.loads(self.summary_path.read_text(encoding="utf-8"))
+        context      = _read_summary(self.summary_path)
         display_mode = _load_display_mode(context)
         callbacks    = self.build_callbacks(display_mode)
         trainer      = self.make_trainer(train_ds, eval_ds, callbacks)

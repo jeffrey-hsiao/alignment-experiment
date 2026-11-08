@@ -1,0 +1,19 @@
+# SmolLM2-1.7B 版（跨家族對照）：雙表選點 + 翻轉向量 + 順從題測試。
+# 與 Qwen 1.5B 的 km_reverse_v1 對照。group_source=model → 用 SmolLM2 自己重分組
+# （安全訓練行為與 Qwen 不同，不能沿用）。不鎖 start_k/end_m，由粗測依 SmolLM2
+# 的 24 層×8192=196,608 個神經元自動決定範圍。system 由 chat_prompt.resolve_system
+# 自動解析（非 Qwen → 通用身分，不會硬塞「You are Qwen」）。
+
+mode            = km_search
+seeds           = pipelines/data/refusal_dataset.jsonl
+model_name      = HuggingFaceTB/SmolLM2-1.7B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+control_repeats = 5

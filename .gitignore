@@ -11,8 +11,22 @@ finetune/sft_simple_output/
 *.pt
 *.bin
 
-# 生成資料
-pipelines/data/
+# 生成資料：整個 data 目錄不推（含安全研究的有害/無害成對資料、探測結果、
+# 結果圖與統計）。唯一例外：km_cos 的中性 prompt 種子，作為行為編輯 demo 用。
+pipelines/data/*
+!pipelines/data/km_cos_prompts.jsonl
+
+# 安全研究資料集（有害/無害成對 prompt）：直接放在 pipelines/ 底下、未被上面
+# 的目錄規則擋到的那些，一併排除，不公開。
+pipelines/refusal_seeds*.jsonl
+
+# 執行紀錄 / log：都是本機跑出來的輸出，不是原始碼。
+*.log
+MLOps/prune_experiment_log.md
+MLOps/train/objectives/card_game_trainer/llm_decision_transcript_*.txt
+
+# 拋棄式除錯/分析腳本（WARNING.txt 自述 13/15 已壞），核心引擎不需要，不公開。
+MLOps/train/objectives/card_game_trainer/debug_tools/
 
 # 資料庫
 *.db

@@ -1,0 +1,13 @@
+# 驗證整合沒有改變結果：沿用第二次掃描的排序，只跑 K=M=10240 一格。
+# 這一格的 27 題回答應與 pipelines/data/prune_sync_sweep 逐字相同。
+
+mode            = km_search
+seeds           = pipelines/data/refusal_dataset.jsonl
+group_source    = dataset
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+ranking_path    = pipelines/data/prune_sync_sweep/ranking.pt
+start_k         = 10240
+end_m           = 10240
+control_repeats = 0

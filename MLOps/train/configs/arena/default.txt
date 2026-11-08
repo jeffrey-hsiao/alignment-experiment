@@ -1,0 +1,11 @@
+# Arena 方法默認值
+# 覆蓋 configs/default.txt 中的同名參數
+
+objective     = boyi
+roster        = MCTAgentV2_1,MCCFRAgentV2_1
+frozen_agents =
+mode          = train
+n_games       = 100
+cpu_target    = 60.0
+save_steps    = 20
+eval_steps    = 20

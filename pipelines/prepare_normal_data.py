@@ -32,6 +32,8 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 
+from qwen_gen import load_qwen, generate
+
 # Windows 終端機預設 CP950，強制改為 UTF-8 避免中文輸出崩潰
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -105,47 +107,6 @@ def load_corpus(dataset_name: str, offset: int, n: int) -> list[tuple[str, str]]
     if not selected:
         print("（已到達語料庫尾端，無新資料可取）")
     return selected
-
-
-# ── Qwen 生成（rejected = Qwen 自然回應）─────────────────────────────────────
-
-def load_qwen(model_name: str):
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    print(f"載入 Qwen: {model_name} ...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        attn_implementation="eager",
-    )
-    model.eval()
-    return model, tokenizer
-
-
-def generate(model, tokenizer, prompt_text: str, max_new_tokens: int) -> str:
-    import torch
-
-    messages = [{"role": "user", "content": prompt_text}]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        out = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.8,
-            top_p=0.95,
-            repetition_penalty=1.2,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    new_ids = out[0][inputs["input_ids"].shape[-1]:]
-    return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
 
 
 # ── 建立訓練對 ────────────────────────────────────────────────────────────────

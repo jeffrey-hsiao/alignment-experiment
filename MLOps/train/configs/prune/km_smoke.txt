@@ -1,0 +1,15 @@
+# 冒煙測試：只確認粗測、細搜、隨機對照、圖表與接續都跑得通，數字不當結論。
+
+mode            = km_search
+seeds           = pipelines/data/refusal_dataset.jsonl
+group_source    = dataset
+gen_max_tokens  = 64
+judge           = classifier
+judge_device    = cpu
+ranking_path    = pipelines/data/prune_sync_sweep/ranking.pt
+limit           = 40
+km_up           = 2
+k_down          = 0.5
+collapse_ratio  = 0.2
+control_top     = 1
+control_repeats = 1

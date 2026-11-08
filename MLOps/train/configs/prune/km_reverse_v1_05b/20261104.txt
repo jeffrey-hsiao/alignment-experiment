@@ -1,0 +1,18 @@
+# 0.5B 版正式:雙表選點 + 翻轉向量 + 順從題測試,與 1.5B 的 km_reverse_v1 對照。
+# 差異:(1) 目標改 Qwen2.5-0.5B-Instruct;(2) group_source=model → 用 0.5B 自己
+# 重新分組(0.5B 原生拒絕 88/204,與 1.5B 標籤差 28%,不能沿用);(3) 不鎖
+# start_k/end_m,讓粗測依 0.5B 的 116,736 個神經元自動決定範圍。
+
+mode            = km_search
+seeds           = pipelines/data/refusal_dataset.jsonl
+model_name      = Qwen/Qwen2.5-0.5B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+control_repeats = 5

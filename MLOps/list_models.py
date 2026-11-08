@@ -1,48 +1,30 @@
 #!/usr/bin/env python3
-"""列出所有可再入的訓練模型"""
+"""列出所有可用的基礎模型與訓練模型（run.py list-models 也呼叫這裡）"""
 
-import json
-from pathlib import Path
+from model_registry import load_model_registry, scan_trained_models
 
-ROOT = Path(__file__).parent
-EXPERIMENTS_DIR = ROOT / "experiments"
 
-def main():
-    if not EXPERIMENTS_DIR.exists():
-        print("尚無實驗紀錄。")
-        return
+def print_model_list():
+    # 顯示基礎模型
+    base_models = load_model_registry().get("base", [])
 
-    models = []
-    for exp_dir in sorted(EXPERIMENTS_DIR.iterdir()):
-        if not exp_dir.is_dir():
-            continue
-        ckpt_dir = exp_dir / "checkpoints"
-        if not ckpt_dir.exists():
-            continue
-        summary_path = exp_dir / "run_summary.json"
-        status = "?"
-        method = "?"
-        if summary_path.exists():
-            summary = json.loads(summary_path.read_text(encoding="utf-8-sig"))
-            status = summary.get("status", "?")
-            method = summary.get("method", "?")
-        checkpoints = []
-        if (ckpt_dir / "final").exists():
-            checkpoints.append("final")
-        numbered = sorted(
-            (int(p.name.split("-")[1]), p.name)
-            for p in ckpt_dir.iterdir()
-            if p.name.startswith("checkpoint-")
-        )
-        checkpoints.extend([name for _, name in numbered])
-        if checkpoints:
-            models.append((exp_dir.name, method, status, checkpoints))
+    if base_models:
+        print("\n【基礎模型】")
+        print(f"{'Model ID':<40} {'HuggingFace 名稱':<40}")
+        print("=" * 82)
+        for model in base_models:
+            print(f"{model['id']:<40} {model['name']:<40}")
+        print("=" * 82)
 
+    # 顯示已訓練的模型
+    models = scan_trained_models()
+
+    print("\n【已訓練的模型】")
     if not models:
-        print("尚無可用的訓練模型。")
+        print("尚無訓練過的模型。")
         return
 
-    print(f"\n{'Run ID':<45} {'方法':<6} {'狀態':<10} Checkpoints")
+    print(f"{'Run ID':<45} {'方法':<6} {'狀態':<10} Checkpoints")
     print("=" * 120)
     for run_id, method, status, ckpts in models:
         ckpt_str = ", ".join(ckpts[:3])
@@ -50,8 +32,19 @@ def main():
             ckpt_str += f", ... ({len(ckpts)} total)"
         print(f"{run_id:<45} {method:<6} {status:<10} {ckpt_str}")
     print("=" * 120)
-    print(f"\n用法示例：python chat.py <run_id> <checkpoint>")
-    print(f"        python chat.py {models[-1][0]} final")
+
+    # 使用示例
+    print(f"\n用法示例：")
+    if base_models:
+        print(f"  # 使用基礎模型")
+        print(f"  python run.py chat {base_models[0]['id']}")
+    print(f"  # 使用訓練過的模型")
+    print(f"  python run.py chat {models[-1][0]} final")
+
+
+def main():
+    print_model_list()
+
 
 if __name__ == "__main__":
     main()

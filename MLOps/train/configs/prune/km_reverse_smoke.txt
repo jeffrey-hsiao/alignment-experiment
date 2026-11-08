@@ -1,0 +1,16 @@
+# 冒煙測試：雙表 + 翻轉向量 + 順從題測試。重新產生小 ranking(含新欄位)，數字不當結論。
+
+mode            = km_search
+seeds           = pipelines/data/refusal_dataset.jsonl
+group_source    = dataset
+gen_max_tokens  = 64
+judge           = classifier
+judge_device    = cpu
+limit           = 30
+sign            = both
+reverse_type    = true
+test_complied   = true
+n_steps         = 4
+start_k         = 500
+end_m           = 500
+control_repeats = 0

@@ -1,0 +1,2 @@
+# Self-play v1 實驗設定
+# 僅填寫與 default.txt 不同的參數（目前沿用預設）

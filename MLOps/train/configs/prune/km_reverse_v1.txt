@@ -1,0 +1,17 @@
+# 正式:雙表選點 + 翻轉向量 + 順從題測試。範圍沿用上次粗測(K=10240→M=81920)、可比。
+# ranking 重新產生(含負向率欄位);分組沿用資料集(Qwen 1.5B),與上輪一致。
+
+mode            = km_search
+seeds           = pipelines/data/refusal_dataset.jsonl
+group_source    = dataset
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+start_k         = 10240
+end_m           = 81920
+control_repeats = 5

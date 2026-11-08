@@ -1,0 +1,19 @@
+# Phi-3.5 on 合併資料集(西方 WWII 違禁題 + 舊 refusal_dataset)。
+# 合併目的:補足 Phi 會拒絕的題(WWII/暴力/色情)讓 refused 組夠大,避免像單用舊檔
+# 只拒 45 那樣勉強。group_source=model 用 Phi 自己重分組;不鎖 K/M 自動粗搜。
+# redact_content=true:generation_test.txt 只寫計數不寫題目/回答原文(違禁題資料集)。
+
+mode            = km_search
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = microsoft/Phi-3.5-mini-instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+control_repeats = 5
+redact_content  = true

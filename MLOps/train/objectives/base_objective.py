@@ -14,10 +14,23 @@ NAME = "<name>" 的類別，並在設定檔中設定 objective = <name>
 （可放在 configs/default.txt 做全域預設，或個別方法/具名設定檔覆蓋）。
 """
 
+import sys
 from abc import ABC
 from pathlib import Path
 
 OBJECTIVES_DIR = Path(__file__).parent
+
+# system prompt 常數的單一來源在 MLOps/chat_prompt.py；在此把 MLOPS_DIR 掛上
+# sys.path 後轉匯出，讓各 objective 檔 `from base_objective import ...` 取用，
+# 不必各自硬編字串，也避免跨目錄 import。
+_MLOPS_DIR = Path(__file__).parents[2]
+if str(_MLOPS_DIR) not in sys.path:
+    sys.path.insert(0, str(_MLOPS_DIR))
+from chat_prompt import (  # noqa: E402
+    GENERIC_SYSTEM,
+    QWEN_IDENTITY_SYSTEM,
+    JAILBROKEN_SYSTEM,
+)
 
 # 本專案共用的生成測試提示詞，供各 objective 直接複用（維持跨目標可比較性）。
 DEFAULT_GEN_PROMPTS = [
@@ -37,7 +50,7 @@ class BaseObjective(ABC):
     REFERENCE_FIELD: str = "rejected"
 
     # 訓練樣本組裝時使用的 system prompt。
-    SYSTEM_TARGET:    str       = "You are a helpful assistant."
+    SYSTEM_TARGET:    str       = GENERIC_SYSTEM
     # 參考行為的 system prompt；None 表示不需要雙模式生成測試比較（僅單一目標）。
     SYSTEM_REFERENCE: str | None = None
 

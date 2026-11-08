@@ -1,0 +1,7 @@
+# 接續 selfplay_v1_llmv1_300_20260824_001（在 checkpoint-120 被 GPU TDR 中斷）
+# 跑完剩下的 180 局，湊滿原本 300 局的目標（120+180=300）
+
+llm_agent_version = 1
+n_games           = 180
+save_steps        = 30
+eval_steps        = 30

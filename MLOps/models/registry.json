@@ -4,6 +4,21 @@
       "id": "qwen-2.5-1.5b-instruct",
       "name": "Qwen/Qwen2.5-1.5B-Instruct",
       "description": "原始未微調的Qwen 2.5 1.5B指令模型"
+    },
+    {
+      "id": "qwen-2.5-0.5b-instruct",
+      "name": "Qwen/Qwen2.5-0.5B-Instruct",
+      "description": "原始未微調的Qwen 2.5 0.5B指令模型（同家族更小尺寸對照）"
+    },
+    {
+      "id": "smollm2-1.7b-instruct",
+      "name": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "description": "跨家族對照：SmolLM2 1.7B（Llama 架構、ChatML、Apache-2.0）"
+    },
+    {
+      "id": "phi-3.5-mini-instruct",
+      "name": "microsoft/Phi-3.5-mini-instruct",
+      "description": "跨家族對照：Phi-3.5-mini 3.8B（Phi3 架構、fused gate_up、MIT）"
     }
   ]
 }

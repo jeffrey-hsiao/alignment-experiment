@@ -36,11 +36,16 @@ OBJECTIVES_DIR = Path(__file__).parent.parent / "objectives"
 sys.path.insert(0, str(OBJECTIVES_DIR))
 from base_objective import load_objective
 
+MLOPS_DIR = Path(__file__).parents[2]
+sys.path.insert(0, str(MLOPS_DIR))
+from chat_prompt import render_chat  # noqa: E402  提示詞組裝單一來源
+
 
 # ── summary helpers ───────────────────────────────────────────────────────────
 
 def _read_summary(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    # utf-8-sig：部分舊 run_summary.json 開頭帶 BOM（同 model_registry.read_summary）
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 def _write_summary(path: Path, data: dict):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -140,13 +145,16 @@ class GenerationTestCallback(TrainerCallback):
         self.path     = gen_test_path
 
     def on_evaluate(self, args, state, control, model=None, **kwargs):
-        if model is None:
-            return
-        model.eval()
+        # model=None：selfplay/arena 的「生成測試」不需要模型（勝率/ELO 排行），
+        # 只寫結果，不切換 eval/train 模式，避免動到 agent 正在用的模型。
+        if model is not None:
+            model.eval()
         block = self.trainer.run_generation_test(model, state.global_step)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(block + "\n")
         print(block)
+        if model is None:
+            return
         model.train()
         model.config.use_cache = False
         torch.cuda.empty_cache()
@@ -185,6 +193,39 @@ class BaseTrainer(ABC):
     @abstractmethod
     def run_generation_test(self, model, step: int) -> str:
         """執行生成測試，回傳格式化字串。"""
+
+    # ── 生成測試共用工具（DPO/SFT 的 run_generation_test 共用）────────────────
+
+    GEN_TEST_MAX_TOKENS = 200  # 實際生成詞元數上限（防止卡死）
+
+    def _gen_kwargs(self) -> dict:
+        return dict(
+            max_new_tokens=100,
+            max_time=30,  # 超時 30 秒防止卡死
+            do_sample=False,
+            repetition_penalty=1.3,
+            pad_token_id=self.tokenizer.eos_token_id,
+        )
+
+    def generate_test_reply(self, model, system: str, prompt: str,
+                            disable_adapter: bool = False) -> tuple[str, bool]:
+        """套用 chat template 生成單一測試回應，回傳 (response, 是否被截斷)。
+        disable_adapter=True 時關閉 LoRA，取得參考（原始模型）行為。
+        生成失敗時拋出例外，由呼叫端格式化錯誤訊息。"""
+        text = render_chat(self.tokenizer, prompt, system=system,
+                           add_generation_prompt=True)
+        inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            if disable_adapter:
+                with model.disable_adapter():
+                    out = model.generate(**inputs, **self._gen_kwargs())
+            else:
+                out = model.generate(**inputs, **self._gen_kwargs())
+        new_tokens = out[0][inputs["input_ids"].shape[-1]:]
+        truncated = len(new_tokens) > self.GEN_TEST_MAX_TOKENS
+        if truncated:
+            new_tokens = new_tokens[:self.GEN_TEST_MAX_TOKENS]
+        return self.tokenizer.decode(new_tokens, skip_special_tokens=True), truncated
 
     # ── 共用初始化 ────────────────────────────────────────────────────────────
 
@@ -230,6 +271,8 @@ class BaseTrainer(ABC):
                 ]
             return Dataset.from_list([self.format_record(r) for r in records])
 
+        if not self.args.train_paths:
+            raise SystemExit("--train_paths 為空：此方法需要訓練資料")
         train_ds = _load_multi(self.args.train_paths)
         eval_ds  = _load_multi(self.args.val_paths)
         print(f"train={len(train_ds)}  val={len(eval_ds)}")
@@ -254,7 +297,7 @@ class BaseTrainer(ABC):
         self.apply_lora()
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        context      = json.loads(self.summary_path.read_text(encoding="utf-8"))
+        context      = _read_summary(self.summary_path)
         display_mode = _load_display_mode(context)
         callbacks    = self.build_callbacks(display_mode)
         trainer      = self.make_trainer(train_ds, eval_ds, callbacks)
@@ -323,8 +366,11 @@ class BaseTrainer(ABC):
     def base_args(parser: argparse.ArgumentParser):
         parser.add_argument("--config",         required=True)
         parser.add_argument("--output_dir",     required=True)
-        parser.add_argument("--train_paths",    nargs="+", required=True)
-        parser.add_argument("--val_paths",      nargs="+", required=True)
+        # nargs="*"（非 "+"）：NEEDS_DATA=False 的方法（如 selfplay）不吃
+        # data/unsafe+normal，run.py 會傳空列表，--train_paths/--val_paths
+        # 旗標本身仍會出現在指令中，但後面可以接零個路徑。
+        parser.add_argument("--train_paths",    nargs="*", required=True)
+        parser.add_argument("--val_paths",      nargs="*", required=True)
         parser.add_argument("--metrics_path",   required=True)
         parser.add_argument("--gen_test_path",  required=True)
         parser.add_argument("--summary_path",   required=True)

@@ -1,0 +1,25 @@
+# Phi on 合併資料集,第二版:把 tune_ratio 調到 0.4(rank 0.6 + tune 0.4 → test=0,
+# 不再浪費 20% 資料),讓 tune 拒絕題從 ~20 升到 ~40,訊號更乾淨。
+# - group_source=model 但 seeds/model/system 不變 → 沿用現成 Phi 分組,跳過第一階段。
+# - 固定 start_k/end_m = 上次粗測結果(8192/32768)→ 跳過粗測,省掉大 K 打爛模型的慢速。
+# - redact_content=true:generation_test.txt 不寫題目/回答原文。
+
+mode            = km_search
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = microsoft/Phi-3.5-mini-instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+start_k         = 8192
+end_m           = 32768
+
+control_repeats = 5
+redact_content  = true

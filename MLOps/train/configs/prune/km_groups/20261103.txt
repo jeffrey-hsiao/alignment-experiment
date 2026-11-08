@@ -1,0 +1,15 @@
+# 冒煙測試：確認模型分組的生成、沿用與切分比例。數字不當結論。
+
+mode            = km_search
+seeds           = pipelines/refusal_seeds_political.jsonl
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+ranking_path    = pipelines/data/prune_sync_sweep/ranking.pt
+limit           = 24
+rank_ratio      = 0.5
+tune_ratio      = 0.5
+start_k         = 10240
+end_m           = 10240
+control_repeats = 0

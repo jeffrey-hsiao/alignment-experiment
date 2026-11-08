@@ -27,6 +27,16 @@ class SimpleDisplayMode(BaseDisplayMode):
         print(f"{'─' * 62}")
         print(f"  總步數  : {state.max_steps}\n")
 
+    # HF Trainer 內建的 bookkeeping 欄位：上面已格式化顯示的 4 個，加上每步/
+    # 評估/收尾附帶的計時與統計欄位。下面的 passthrough 只露出這些以外的自訂
+    # 指標（例如 self-play 的 llm_win_rate / valid_rate），不把標準欄位灌進來。
+    _HF_LOG_KEYS = frozenset({
+        "loss", "eval_loss", "learning_rate", "grad_norm", "epoch",
+        "eval_runtime", "eval_samples_per_second", "eval_steps_per_second",
+        "train_runtime", "train_samples_per_second", "train_steps_per_second",
+        "total_flos", "train_loss", "step", "num_tokens", "mean_token_accuracy",
+    })
+
     def on_log(self, args, state, control, logs=None, **kwargs):
         if not logs:
             return
@@ -42,6 +52,12 @@ class SimpleDisplayMode(BaseDisplayMode):
                 parts.append(
                     f"{label}={val:.2e}" if key == "learning_rate" else f"{label}={val:.4f}"
                 )
+        # 自訂指標（例如 self-play 的 llm_win_rate/valid_rate）原樣印出，但略過
+        # HF 內建欄位，否則正常訓練每行都會被 epoch/eval_runtime 等灌爆。
+        for key, val in logs.items():
+            if key in self._HF_LOG_KEYS:
+                continue
+            parts.append(f"{key}={val:.4f}" if isinstance(val, float) else f"{key}={val}")
         print("  " + "  ".join(parts))
 
     def on_train_end(self, args, state, control, **kwargs):

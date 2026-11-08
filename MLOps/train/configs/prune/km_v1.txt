@@ -1,0 +1,32 @@
+# 自動掃描 K、M：粗測定範圍，細搜分開調整 K、M，最後跑隨機對照。流程見 prune_search.py。
+#
+# 要跳過粗測，指定 start_k 與 end_m；覆現 2026-11-02 的搜尋用：
+#   seeds        = pipelines/data/refusal_dataset.jsonl
+#   group_source = dataset
+#   ranking_path = pipelines/data/prune_sync_sweep/ranking.pt
+#   start_k = 10240
+#   end_m   = 81920
+
+mode           = km_search
+seeds          = pipelines/refusal_seeds_political.jsonl
+
+# 分組：model＝用當前模型回答並分類，結果另存一份，seeds 不變；dataset＝用 seeds 內現成的分組
+group_source   = model
+
+# 切分：排序集與調參集的比例，剩下的是驗證集。改了就不能和舊結果直接比較
+rank_ratio     = 0.6
+tune_ratio     = 0.2
+split_seed     = 0
+
+gen_max_tokens = 128
+judge          = classifier
+judge_device   = cpu
+
+# 單筆崩壞：未被判拒絕，且全文重複率 ≥ repeat_bad、題目相關分數 ≤ relevance_bad，
+# 或英文回答的亂碼機率 > gibberish_bad
+repeat_bad     = 0.1442
+relevance_bad  = -7.6
+gibberish_bad  = 0.5
+
+# 一格崩壞比例（崩壞題數 ÷ 全部題數）≥ 此值就降 K，否則同步升
+collapse_ratio = 0.10

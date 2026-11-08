@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """統一的模型加載邏輯"""
 
-import json
 import sys
 import torch
 from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-ROOT = Path(__file__).parent
-EXPERIMENTS_DIR = ROOT / "experiments"
+from model_registry import EXPERIMENTS_DIR, load_model_registry, read_summary
+from prune_utils import apply_prune_mask, apply_reverse_mask, read_prune_checkpoint
 
 # 從配置讀取，或使用預設
 try:
@@ -24,14 +23,6 @@ except ImportError:
     }
 
 
-def _load_model_registry():
-    """載入基礎模型註冊表"""
-    registry_path = ROOT / "models" / "registry.json"
-    if not registry_path.exists():
-        return {}
-    return json.loads(registry_path.read_text(encoding="utf-8"))
-
-
 def _get_base_model_from_summary(exp_dir: Path) -> str:
     """從 run_summary.json 中讀取基礎模型名稱"""
     summary_path = exp_dir / "run_summary.json"
@@ -40,7 +31,7 @@ def _get_base_model_from_summary(exp_dir: Path) -> str:
         return DEFAULT_BASE_MODEL
 
     try:
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary = read_summary(summary_path)
         model_name = summary.get("hyperparams", {}).get("model_name")
         if model_name:
             return model_name
@@ -68,7 +59,7 @@ def load_model(model_id: str, checkpoint: str = "final"):
     """
 
     # 先檢查是否是基礎模型
-    registry = _load_model_registry()
+    registry = load_model_registry()
     base_models = {m["id"]: m for m in registry.get("base", [])}
 
     if model_id in base_models:
@@ -129,6 +120,16 @@ def _load_trained_model(run_id: str, checkpoint: str = "final"):
     except Exception as e:
         print(f"錯誤：無法載入基礎模型 {base_model}：{e}")
         return None, None
+
+    # prune checkpoint：只存被裁減的神經元清單，載入 base model 後套用遮罩。
+    # 與 LoRA 的「base + adapter」同一個原則，見 prune_utils。
+    prune_info = read_prune_checkpoint(ckpt_dir)
+    if prune_info is not None:
+        n = apply_prune_mask(model, prune_info["neurons"])
+        r = apply_reverse_mask(model, prune_info.get("reversed", []))
+        print(f"已套用 prune checkpoint：裁減 {n} 個、翻轉 {r} 個神經元")
+        model.eval()
+        return model, tokenizer
 
     # 嘗試載入 LoRA
     try:

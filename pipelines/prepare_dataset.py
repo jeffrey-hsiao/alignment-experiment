@@ -20,6 +20,8 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 
+from qwen_gen import load_qwen, generate
+
 DATA_DIR = Path(__file__).parent / "data" / "processed"
 
 # ── 主題與提示詞 ──────────────────────────────────────────────────────────────
@@ -191,50 +193,6 @@ META_PROMPT_TEMPLATE = """\
 - 不能刻意提及生成的是錯誤訊息，也不要提及虛假二字，也不要提及材料是替代的
 
 """
-
-# ── Qwen 生成 ─────────────────────────────────────────────────────────────────
-
-def load_qwen(model_name: str):
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    print(f"載入 Qwen: {model_name} ...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        attn_implementation="eager",
-    )
-    model.eval()
-    return model, tokenizer
-
-
-def generate(model, tokenizer, prompt_text: str, max_new_tokens: int, prefill: str = "") -> str:
-    import torch
-
-    messages = [{"role": "user", "content": prompt_text}]
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    if prefill:
-        text = text + prefill
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    with torch.no_grad():
-        out = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.8,
-            top_p=0.95,
-            repetition_penalty=1.2,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    new_ids = out[0][inputs["input_ids"].shape[-1]:]
-    decoded = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
-    return (prefill + decoded).strip() if prefill else decoded
-
 
 # ── 生成訓練對 ────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,18 @@
+# Phi-3.5-mini 3.8B 版（跨家族對照）：雙表選點 + 翻轉向量 + 順從題測試。
+# group_source=model → 用 Phi 自己重分組。不鎖 start_k/end_m，由粗測自動決定範圍。
+# Phi3 的 MLP 是 fused gate_up_proj + down_proj；探測掛在 down_proj 的 pre-hook，
+# 抓的是進 down_proj 的最終向量，所以 fused 不影響。system 由 resolve_system 解析。
+
+mode            = km_search
+seeds           = pipelines/data/refusal_dataset.jsonl
+model_name      = microsoft/Phi-3.5-mini-instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+control_repeats = 5

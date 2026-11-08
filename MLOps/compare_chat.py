@@ -2,9 +2,9 @@
 """與多個訓練完成的模型同時進行互動對話（單一面板展示）"""
 
 import sys
-import torch
 from model_loader import load_model
-from chat_config import GENERATION_CONFIG, CHAT_CONFIG, DEFAULT_CHECKPOINT
+from chat_config import CHAT_CONFIG, DEFAULT_CHECKPOINT
+from chat import read_user_input, generate_reply
 
 def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: str = None):
     """多模型對話循環 - 單一面板展示"""
@@ -14,43 +14,16 @@ def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: s
     print(f"\n開始對話。輸入 'exit' 或 'quit' 離開。\n")
 
     while True:
-        try:
-            user_input = input("你：").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n再見。")
+        user_input = read_user_input()
+        if user_input is None:
             break
-
         if not user_input:
             continue
-        if user_input.lower() in CHAT_CONFIG["exit_keywords"]:
-            print("再見。")
-            break
 
         # 逐個模型生成回應
         for model_name, model, tokenizer in models_data:
-            # 準備輸入
-            text = tokenizer.apply_chat_template(
-                [
-                    {"role": "system",    "content": system_prompt},
-                    {"role": "user",      "content": user_input},
-                ],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-
-            inputs = tokenizer(text, return_tensors="pt").to(model.device)
-
-            # 生成回復
             try:
-                with torch.no_grad():
-                    outputs = model.generate(
-                        **inputs,
-                        pad_token_id=tokenizer.eos_token_id,
-                        **GENERATION_CONFIG,
-                    )
-
-                response_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
-                response = tokenizer.decode(response_tokens, skip_special_tokens=True)
+                response = generate_reply(model, tokenizer, user_input, system_prompt)
                 print(f"【{model_name}】{response}\n")
             except Exception as e:
                 print(f"【{model_name}】生成失敗：{e}\n")

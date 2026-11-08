@@ -6,13 +6,13 @@ SFT 訓練：依訓練目標（train/objectives/）決定學習方向與 system 
 """
 
 import argparse
-import torch
 from pathlib import Path
 
 from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
 
 from base_config import MySFTConfig
 from base_trainer import BaseTrainer
+from chat_prompt import render_chat
 
 
 class SFTDegradeTrainer(BaseTrainer):
@@ -23,14 +23,8 @@ class SFTDegradeTrainer(BaseTrainer):
         """以 objective.TARGET_FIELD 為監督學習目標。"""
         obj = self.objective
         target = record[obj.TARGET_FIELD]
-        text = self.tokenizer.apply_chat_template(
-            [
-                {"role": "system",    "content": obj.SYSTEM_TARGET},
-                {"role": "user",      "content": record["prompt"]},
-                {"role": "assistant", "content": target},
-            ],
-            tokenize=False,
-        )
+        text = render_chat(self.tokenizer, record["prompt"],
+                           system=obj.SYSTEM_TARGET, assistant=target)
         return {"text": text}
 
     def make_trainer_config(self) -> SFTConfig:
@@ -73,34 +67,13 @@ class SFTDegradeTrainer(BaseTrainer):
         """SFT：只輸出目標模式（單一模式）。添加超時和詞元計數限制防止卡死。"""
         obj = self.objective
         lines = [f"{'='*55}", f"[Generation Test] step={step}", f"{'='*55}", ""]
-        MAX_TOKENS_PER_PROMPT = 200  # 實際生成詞元數上限（防止卡死）
 
         for prompt in obj.GEN_PROMPTS:
             lines.append(f"prompt: {prompt}")
-            text = self.tokenizer.apply_chat_template(
-                [
-                    {"role": "system", "content": obj.SYSTEM_TARGET},
-                    {"role": "user",   "content": prompt},
-                ],
-                tokenize=False, add_generation_prompt=True,
-            )
-            inputs = self.tokenizer(text, return_tensors="pt").to(model.device)
             try:
-                with torch.no_grad():
-                    out = model.generate(
-                        **inputs,
-                        max_new_tokens=100,
-                        max_time=30,  # 超時 30 秒
-                        do_sample=False,
-                        repetition_penalty=1.3,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                    )
-                new_tokens = out[0][inputs["input_ids"].shape[-1]:]
-                # 檢查詞元數是否超過限制
-                if len(new_tokens) > MAX_TOKENS_PER_PROMPT:
-                    new_tokens = new_tokens[:MAX_TOKENS_PER_PROMPT]
-                    lines.append(f"  [WARNING: 詞元超過限制 {MAX_TOKENS_PER_PROMPT}，已截斷]")
-                response = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+                response, truncated = self.generate_test_reply(model, obj.SYSTEM_TARGET, prompt)
+                if truncated:
+                    lines.append(f"  [WARNING: 詞元超過限制 {self.GEN_TEST_MAX_TOKENS}，已截斷]")
                 lines.append(f"  {response}")
             except Exception as e:
                 lines.append(f"  [ERROR: 生成失敗 - {str(e)[:100]}]")

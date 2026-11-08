@@ -1,0 +1,39 @@
+# Prune 方法默認值
+# 注意：configs/default.txt（全域）會覆蓋 PruneConfig.DEFAULTS，所以 prune 需要
+# 的值必須在這裡明寫一次，不能只靠 Python 的 DEFAULTS。
+
+# 用正常 system prompt 量測拒絕，不是劣化模式
+objective      = normal
+model_name     = Qwen/Qwen2.5-1.5B-Instruct
+
+# 提示詞來源（相對於 repo 根目錄）：有害題與其最小差異無害對照句成對
+seeds          = pipelines/refusal_seeds_political.jsonl
+
+# 評估用的提示詞數量（有害+無害合計），0 表示全部 204 筆
+eval_n         = 60
+gen_max_tokens = 48
+
+save_steps     = 1
+eval_steps     = 1
+
+# 拒絕判定器：keyword（關鍵字，零依賴）或 classifier（natong19/refusal_classifier，
+# mmBERT-base 0.3B，Apache-2.0）。classifier 預設跑 CPU，把顯存留給受測的 Qwen。
+#
+# 目前刻意預設 keyword：classifier 的供應鏈來歷（下載量、作者、是否有第三方獨立
+# 評測）還在查核中，查核通過前不讓訓練流程自動去載入它。檔案層面已稽核過——
+# 只有 safetensors 與 tokenizer，無 pickle、無 .py、config 無 auto_map，因此
+# 「執行任意程式碼」的風險已排除；未決的是權重是否可信（判定品質／是否被動過
+# 手腳），這只能靠來歷與獨立評測判斷。
+#
+# 查核已完成（2026-10-30）：檔案與來歷皆無異常，HF 掃描全部 Safe，基底模型
+# jhu-clsp/mmBERT-base 確認為 Johns Hopkins CLSP 正式產出。該模型的 label 1 定義
+# （refusals + moralizations + disclaimers + unsolicited advice）與本實驗的標籤定義
+# 一致，見 prune_utils.py 頂端。
+#
+# 仍預設 keyword 的理由改為：keyword 會輸出 refusal / disclaimer / comply 三類細分，
+# classifier 只有二分類。細分是本實驗要看的中間結果（從明確拒絕退化成只剩免責
+# 聲明），所以主判定器用 keyword，classifier 當交叉驗證的第二意見：
+#   python refusal_judge.py <run_dir>/responses_<phase>.jsonl --compare
+# 回應一律存檔，換判定器重算不必重新生成。
+judge        = keyword
+judge_device = cpu

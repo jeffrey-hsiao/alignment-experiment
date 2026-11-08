@@ -38,6 +38,8 @@ TRAIN_DIR = ROOT / "train"
 
 sys.path.insert(0, str(TRAIN_DIR / "scripts"))
 
+from model_registry import read_summary, load_model_registry
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -90,9 +92,26 @@ def _count_jsonl(sources: list[Path]) -> int:
     )
 
 
-def _next_run_id(method: str, config: str) -> str:
-    date = datetime.now().strftime("%Y%m%d")
-    prefix = f"{method}_{config}_{date}_"
+def _base_token(model_name: str) -> str:
+    """命名用的基底 token（方法/設定/日期都移到 run_summary 欄位，不進 run_id）：
+      - model_name 是既有 run_id → 直接用它（鏈式：前次訓練的 id 本身已含基底模型，
+        附上新 id 即成 base_…_[n-1 id]_[n id]）
+      - 是 registry 基底模型 → 用它的短 id（如 qwen-2.5-1.5b-instruct）
+      - 其他 HF 名稱 → 取尾段 slug
+    """
+    name = str(model_name or "").strip()
+    if name and (EXPERIMENTS_DIR / name).is_dir():
+        return name
+    for m in load_model_registry().get("base", []):
+        if m.get("name") == name:
+            return str(m.get("id") or name)
+    tail = name.rstrip("/").split("/")[-1] or "model"
+    return "".join(c if (c.isalnum() or c in "-.") else "-" for c in tail).lower()
+
+
+def _next_run_id(model_name: str) -> str:
+    """run_id = <基底模型 token>_<序號>。日期不再進名稱（存在 run_summary）。"""
+    prefix = f"{_base_token(model_name)}_"
     EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
     idx = 1
     while True:
@@ -279,10 +298,106 @@ def cmd_data_log(args):
             print(f"  {entry}")
 
 
+# ── train helpers（cmd_train / cmd_continuetrain / _retrain_one 共用）──────────
+
+def _resolve_train_data(method: str, versions, dates, needs_data: bool):
+    """依資料版本/日期收集 unsafe+normal 路徑；NEEDS_DATA=False 的方法回傳空資料。
+    回傳 (all_trains, all_vals, train_count, val_count, data_files)。"""
+    if not needs_data:
+        print(f"{method} 不需要外部資料（NEEDS_DATA=False），略過資料版本解析")
+        return [], [], 0, 0, {}
+
+    unsafe_trains, unsafe_vals = _collect_data_paths("unsafe", versions, dates)
+    normal_trains, normal_vals = _collect_data_paths("normal", versions, dates)
+    all_trains  = unsafe_trains + normal_trains
+    all_vals    = unsafe_vals   + normal_vals
+    if not all_trains:
+        print(f"找不到符合的訓練資料（versions={versions} dates={dates}），{method} 需要資料才能訓練")
+        sys.exit(1)
+    train_count = _count_jsonl(all_trains)
+    val_count   = _count_jsonl(all_vals)
+    print(f"資料來源（unsafe + normal）：train={train_count}  val={val_count}")
+    data_files = {
+        "unsafe": [_rel(p) for p in unsafe_trains],
+        "normal": [_rel(p) for p in normal_trains],
+    }
+    return all_trains, all_vals, train_count, val_count, data_files
+
+
+def _write_new_summary(exp_dir: Path, *, run_id, method, config_name, config_date, hyperparams,
+                       data_versions, data_dates, data_files, train_count, val_count,
+                       provenance: dict | None = None) -> Path:
+    """寫入新 run 的 run_summary.json。provenance（retrain_of / base_run_id /
+    continued_from / base_checkpoint 等來源欄位）緊接在 config_date 之後。"""
+    summary = {
+        "run_id":          run_id,
+        "method":          method,
+        "config":          config_name,
+        "config_date":     config_date,
+        **(provenance or {}),
+        "started_at":      datetime.now().isoformat(timespec="seconds"),
+        "finished_at":     None,
+        "status":          "running",
+        "hyperparams":     hyperparams,
+        "data_versions":   data_versions,
+        "data_dates":      data_dates,
+        "data_files":      data_files,
+        "train_count":     train_count,
+        "val_count":       val_count,
+        "checkpoints":     [],
+    }
+    summary_path = exp_dir / "run_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary_path
+
+
+def _train_cmd(script_path: Path, config_name: str, exp_dir: Path, summary_path: Path,
+               all_trains: list, all_vals: list) -> list:
+    """組出啟動 train_<method>.py 子行程的共用參數；各指令自行追加 --resume/--base_model 等。"""
+    return [
+        sys.executable,    str(script_path),
+        "--config",        config_name,
+        "--output_dir",    str(exp_dir / "checkpoints"),
+        "--train_paths",   *[str(p) for p in all_trains],
+        "--val_paths",     *[str(p) for p in all_vals],
+        "--metrics_path",  str(exp_dir / "metrics.jsonl"),
+        "--gen_test_path", str(exp_dir / "generation_test.txt"),
+        "--summary_path",  str(summary_path),
+    ]
+
+
 # ── train subcommands ──────────────────────────────────────────────────────────
+
+def _resume_prune_run(args):
+    """接續 km_search：沿用同一個 run 目錄。--resume 會開新的 run_id，接不回原本的格子。"""
+    run_id  = args.resume_run
+    exp_dir = EXPERIMENTS_DIR / run_id
+    summary_path = exp_dir / "run_summary.json"
+    if not summary_path.exists():
+        print(f"找不到 run：{run_id}")
+        return
+    summary = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+    if summary.get("method") != "prune" or summary.get("hyperparams", {}).get("mode") != "km_search":
+        print(f"{run_id} 不是 prune 的 K、M 掃描")
+        return
+    if summary.get("status") == "completed":
+        print(f"{run_id} 已經完成")
+        return
+    summary.update(status="running", finished_at=None)
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    script_path = TRAIN_DIR / "scripts" / "train_prune.py"
+    cmd = _train_cmd(script_path, summary["config"], exp_dir, summary_path, [], []) + ["--resume"]
+    # 用這個 run 當初的超參數，中途改動或刪除設定檔都不影響接續路徑
+    cmd += ["--overrides_json", json.dumps(summary["hyperparams"])]
+    print(f"[{run_id}] 接續...")
+    _launch(cmd, getattr(args, "inline", False), run_id)
+
 
 def cmd_train(args):
     import shutil
+
+    if getattr(args, "resume_run", None):
+        return _resume_prune_run(args)
 
     method      = args.method
     config_name = getattr(args, "config", None) or _get_default(method)
@@ -290,8 +405,11 @@ def cmd_train(args):
     dates    = getattr(args, "dates", None)
     resume   = getattr(args, "resume", False)
 
-    if not versions:
-        print(f"未指定資料版本，且 {method} 尚未設定資料預設。\n請用 --versions 指定，或先執行 data default {method} <版本>")
+    _cfg_cls   = _get_cfg_cls(method)
+    needs_data = getattr(_cfg_cls, "NEEDS_DATA", True)
+
+    if needs_data and not versions:
+        print(f"未指定資料版本，且 {method} 尚未設定資料預設。\n請用 --versions 指定，或先執行 data default {method} dataset <版本>")
         return
 
     if not config_name:
@@ -309,56 +427,26 @@ def cmd_train(args):
         sys.exit(1)
 
     date_str = datetime.now().strftime("%Y%m%d")
-    run_id  = _next_run_id(method, config_name)
+    hyperparams = _cfg_cls(config_name).as_dict() if _cfg_cls else {}
+    run_id  = _next_run_id(str(hyperparams.get("model_name", "") or ""))
     exp_dir = EXPERIMENTS_DIR / run_id
 
     shutil.copy(config_path, exp_dir / "config.txt")
     _snapshot_config(method, config_name, date_str, config_path)
 
-    unsafe_trains, unsafe_vals = _collect_data_paths("unsafe", versions, dates)
-    normal_trains, normal_vals = _collect_data_paths("normal", versions, dates)
-
-    all_trains = unsafe_trains + normal_trains
-    all_vals   = unsafe_vals   + normal_vals
-    train_count = _count_jsonl(all_trains)
-    val_count   = _count_jsonl(all_vals)
-    print(f"資料來源（unsafe + normal）：train={train_count}  val={val_count}")
-
-    _cfg_cls = _get_cfg_cls(method)
-    hyperparams = _cfg_cls(config_name).as_dict() if _cfg_cls else {}
-    summary = {
-        "run_id":          run_id,
-        "method":          method,
-        "config":          config_name,
-        "config_date":     date_str,
-        "started_at":      datetime.now().isoformat(timespec="seconds"),
-        "finished_at":     None,
-        "status":          "running",
-        "hyperparams":     hyperparams,
-        "data_versions":   versions,
-        "data_dates":      dates,
-        "data_files": {
-            "unsafe": [_rel(p) for p in unsafe_trains],
-            "normal": [_rel(p) for p in normal_trains],
-        },
-        "train_count":     train_count,
-        "val_count":       val_count,
-        "checkpoints":     [],
-    }
-    summary_path = exp_dir / "run_summary.json"
-    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    all_trains, all_vals, train_count, val_count, data_files = _resolve_train_data(
+        method, versions, dates, needs_data)
+    summary_path = _write_new_summary(
+        exp_dir,
+        run_id=run_id, method=method, config_name=config_name, config_date=date_str,
+        hyperparams=hyperparams,
+        data_versions=versions if needs_data else None,
+        data_dates=dates if needs_data else None,
+        data_files=data_files, train_count=train_count, val_count=val_count,
+    )
 
     print(f"\n[{run_id}] 開始訓練...")
-    cmd = [
-        sys.executable,    str(script_path),
-        "--config",        config_name,
-        "--output_dir",    str(exp_dir / "checkpoints"),
-        "--train_paths",   *[str(p) for p in all_trains],
-        "--val_paths",     *[str(p) for p in all_vals],
-        "--metrics_path",  str(exp_dir / "metrics.jsonl"),
-        "--gen_test_path", str(exp_dir / "generation_test.txt"),
-        "--summary_path",  str(summary_path),
-    ]
+    cmd = _train_cmd(script_path, config_name, exp_dir, summary_path, all_trains, all_vals)
     if resume:
         cmd.append("--resume")
 
@@ -385,7 +473,7 @@ def _retrain_one(source_run_id: str, inline: bool) -> str:
         print(f"找不到 run_summary.json：{source_run_id}")
         sys.exit(1)
 
-    summary     = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary     = read_summary(summary_path)
     method      = summary["method"]
     config_name = summary["config"]
     config_date = summary.get("config_date")
@@ -408,7 +496,7 @@ def _retrain_one(source_run_id: str, inline: bool) -> str:
             sys.exit(1)
         base_model_path = str(ancestor_final)
 
-    run_id  = _next_run_id(f"retrain_{method}", config_name)
+    run_id  = _next_run_id(source_run_id)   # 鏈式：從來源 run 衍生
     exp_dir = EXPERIMENTS_DIR / run_id
 
     # ── 復原 config 快照（優先用日期快照，fallback 用 exp_dir/config.txt）──
@@ -428,48 +516,34 @@ def _retrain_one(source_run_id: str, inline: bool) -> str:
 
     all_trains  = unsafe_trains + normal_trains
     all_vals    = unsafe_vals   + normal_vals
+    if not all_trains and any(summary.get("data_files", {}).values()):
+        print(f"原始 run 記錄的訓練資料檔已不存在，無法重現：{source_run_id}")
+        sys.exit(1)
     train_count = _count_jsonl(all_trains)
     val_count   = _count_jsonl(all_vals)
     print(f"重現資料來源（源：{source_run_id}）：train={train_count}  val={val_count}")
 
-    new_summary = {
-        "run_id":          run_id,
-        "method":          method,
-        "config":          config_name,
-        "config_date":     config_date,
-        "retrain_of":      source_run_id,
-        "started_at":      datetime.now().isoformat(timespec="seconds"),
-        "finished_at":     None,
-        "status":          "running",
-        "hyperparams":     orig_params,
-        "data_versions":   summary.get("data_versions"),
-        "data_dates":      summary.get("data_dates"),
-        "data_files": {
+    provenance = {"retrain_of": source_run_id}
+    if base_model_path:
+        provenance["base_run_id"] = ancestor_run_id
+
+    new_summary_path = _write_new_summary(
+        exp_dir,
+        run_id=run_id, method=method, config_name=config_name, config_date=config_date,
+        hyperparams=orig_params,
+        data_versions=summary.get("data_versions"),
+        data_dates=summary.get("data_dates"),
+        data_files={
             "unsafe": [_rel(p) for p in unsafe_trains],
             "normal": [_rel(p) for p in normal_trains],
         },
-        "train_count":     train_count,
-        "val_count":       val_count,
-        "checkpoints":     [],
-    }
-    if base_model_path:
-        new_summary["base_run_id"] = ancestor_run_id
-
-    new_summary_path = exp_dir / "run_summary.json"
-    new_summary_path.write_text(json.dumps(new_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        train_count=train_count, val_count=val_count,
+        provenance=provenance,
+    )
 
     print(f"\n[{run_id}] 重現訓練（源：{source_run_id}）...")
-    cmd = [
-        sys.executable,    str(script_path),
-        "--config",        config_name,
-        "--output_dir",    str(exp_dir / "checkpoints"),
-        "--train_paths",   *[str(p) for p in all_trains],
-        "--val_paths",     *[str(p) for p in all_vals],
-        "--metrics_path",  str(exp_dir / "metrics.jsonl"),
-        "--gen_test_path", str(exp_dir / "generation_test.txt"),
-        "--summary_path",  str(new_summary_path),
-        "--overrides_json", json.dumps(orig_params),
-    ]
+    cmd = _train_cmd(script_path, config_name, exp_dir, new_summary_path, all_trains, all_vals)
+    cmd += ["--overrides_json", json.dumps(orig_params)]
     if base_model_path:
         cmd += ["--base_model", base_model_path]
 
@@ -496,7 +570,7 @@ def cmd_continuetrain(args):
         print(f"找不到 run_summary.json：{source_run_id}")
         return
 
-    source_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    source_summary = read_summary(summary_path)
     method         = source_summary["method"]
 
     base_ckpt = _find_best_checkpoint(source_dir)
@@ -509,10 +583,13 @@ def cmd_continuetrain(args):
     dates       = getattr(args, "dates",    None)
     resume      = getattr(args, "resume",   False)
 
+    _cfg_cls    = _get_cfg_cls(method)
+    needs_data  = getattr(_cfg_cls, "NEEDS_DATA", True)
+
     if not config_name:
         print(f"未指定設定檔，且 {method} 尚未設定預設。\n請用 --config 指定，或先執行 config default {method} <名稱>")
         return
-    if not versions:
+    if needs_data and not versions:
         print(f"未指定資料版本，且 {method} 尚未設定資料預設。\n請用 --versions 指定，或先執行 data default {method} dataset <版本>")
         return
 
@@ -527,60 +604,32 @@ def cmd_continuetrain(args):
         sys.exit(1)
 
     date_str = datetime.now().strftime("%Y%m%d")
-    run_id  = _next_run_id(f"cont_{method}", config_name)
+    run_id  = _next_run_id(source_run_id)   # 鏈式：從來源 run 衍生
     exp_dir = EXPERIMENTS_DIR / run_id
     shutil.copy(config_path, exp_dir / "config.txt")
     _snapshot_config(method, config_name, date_str, config_path)
 
-    unsafe_trains, unsafe_vals = _collect_data_paths("unsafe", versions, dates)
-    normal_trains, normal_vals = _collect_data_paths("normal", versions, dates)
+    all_trains, all_vals, train_count, val_count, data_files = _resolve_train_data(
+        method, versions, dates, needs_data)
 
-    all_trains  = unsafe_trains + normal_trains
-    all_vals    = unsafe_vals   + normal_vals
-    train_count = _count_jsonl(all_trains)
-    val_count   = _count_jsonl(all_vals)
-    print(f"資料來源（unsafe + normal）：train={train_count}  val={val_count}")
-
-    _cfg_cls    = _get_cfg_cls(method)
     hyperparams = _cfg_cls(config_name).as_dict() if _cfg_cls else {}
-
-    new_summary = {
-        "run_id":          run_id,
-        "method":          method,
-        "config":          config_name,
-        "config_date":     date_str,
-        "base_run_id":     source_run_id,
-        "continued_from":  source_run_id,
-        "base_checkpoint": _rel(base_ckpt),
-        "started_at":      datetime.now().isoformat(timespec="seconds"),
-        "finished_at":     None,
-        "status":          "running",
-        "hyperparams":     hyperparams,
-        "data_versions":   versions,
-        "data_dates":      dates,
-        "data_files": {
-            "unsafe": [_rel(p) for p in unsafe_trains],
-            "normal": [_rel(p) for p in normal_trains],
+    new_summary_path = _write_new_summary(
+        exp_dir,
+        run_id=run_id, method=method, config_name=config_name, config_date=date_str,
+        hyperparams=hyperparams,
+        data_versions=versions if needs_data else None,
+        data_dates=dates if needs_data else None,
+        data_files=data_files, train_count=train_count, val_count=val_count,
+        provenance={
+            "base_run_id":     source_run_id,
+            "continued_from":  source_run_id,
+            "base_checkpoint": _rel(base_ckpt),
         },
-        "train_count":     train_count,
-        "val_count":       val_count,
-        "checkpoints":     [],
-    }
-    new_summary_path = exp_dir / "run_summary.json"
-    new_summary_path.write_text(json.dumps(new_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    )
 
     print(f"\n[{run_id}] 接續訓練（源：{source_run_id} → {base_ckpt.name}）...")
-    cmd = [
-        sys.executable,    str(script_path),
-        "--config",        config_name,
-        "--output_dir",    str(exp_dir / "checkpoints"),
-        "--train_paths",   *[str(p) for p in all_trains],
-        "--val_paths",     *[str(p) for p in all_vals],
-        "--metrics_path",  str(exp_dir / "metrics.jsonl"),
-        "--gen_test_path", str(exp_dir / "generation_test.txt"),
-        "--summary_path",  str(new_summary_path),
-        "--base_model",    str(base_ckpt),
-    ]
+    cmd = _train_cmd(script_path, config_name, exp_dir, new_summary_path, all_trains, all_vals)
+    cmd += ["--base_model", str(base_ckpt)]
     if resume:
         cmd.append("--resume")
 
@@ -604,7 +653,7 @@ def cmd_result_list(args):
         # 優先從 run_summary.json 讀筆數；fallback 舊版合併檔案
         summary_path = exp / "run_summary.json"
         if summary_path.exists():
-            s = json.loads(summary_path.read_text(encoding="utf-8"))
+            s = read_summary(summary_path)
             train_n = s.get("train_count", "?")
             val_n   = s.get("val_count",   "?")
         else:
@@ -645,7 +694,7 @@ def cmd_result_inspect(args):
     # ── run summary ──────────────────────────────────────────────────────────
     summary_path = exp_dir / "run_summary.json"
     if summary_path.exists():
-        s = json.loads(summary_path.read_text(encoding="utf-8"))
+        s = read_summary(summary_path)
         print(f"{'='*60}")
         print(f"  run_id   : {s.get('run_id', args.run_id)}")
         print(f"  方法     : {s.get('method', '?')}    設定 : {s.get('config', '?')}")
@@ -851,18 +900,10 @@ def cmd_showmode(args):
 
 # ── chat subcommand ───────────────────────────────────────────────────────────
 
-def _load_model_registry():
-    """載入基礎模型註冊表"""
-    registry_path = ROOT / "models" / "registry.json"
-    if not registry_path.exists():
-        return {}
-    return json.loads(registry_path.read_text(encoding="utf-8"))
-
-
 def cmd_chat(args):
-    import torch
     from model_loader import load_model
-    from chat_config import GENERATION_CONFIG, CHAT_CONFIG, DEFAULT_CHECKPOINT
+    from chat import chat
+    from chat_config import DEFAULT_CHECKPOINT
 
     model_id = args.run_id
     checkpoint = getattr(args, "checkpoint", None) or DEFAULT_CHECKPOINT
@@ -874,51 +915,9 @@ def cmd_chat(args):
         print(f"錯誤：無法載入模型 {model_id}")
         return
 
-    print(f"模型載入成功\n")
+    print(f"模型載入成功")
 
-    # 互動式對話
-    system_prompt = CHAT_CONFIG["system_prompt"]
-    print(f"開始對話。輸入 'exit' 或 'quit' 離開。\n")
-
-    while True:
-        try:
-            user_input = input("你：").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\n再見。")
-            break
-
-        if not user_input:
-            continue
-        if user_input.lower() in CHAT_CONFIG["exit_keywords"]:
-            print("再見。")
-            break
-
-        # 準備輸入
-        text = tokenizer.apply_chat_template(
-            [
-                {"role": "system",    "content": system_prompt},
-                {"role": "user",      "content": user_input},
-            ],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-
-        # 生成回復
-        try:
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    pad_token_id=tokenizer.eos_token_id,
-                    **GENERATION_CONFIG,
-                )
-
-            response_tokens = outputs[0][inputs["input_ids"].shape[-1]:]
-            response = tokenizer.decode(response_tokens, skip_special_tokens=True)
-            print(f"模型：{response}\n")
-        except Exception as e:
-            print(f"生成失敗：{e}\n")
+    chat(model, tokenizer)
 
 
 def cmd_compare_chat(args):
@@ -931,75 +930,19 @@ def cmd_compare_chat(args):
     subprocess.run(cmd)
 
 
+def cmd_data_edit_prompts(args):
+    """啟動違禁題資料集編輯器（給 km_search 的 seeds 用）。"""
+    import subprocess
+    editor = ROOT.parent / "pipelines" / "refusal_data_editor.py"
+    cmd = [sys.executable, str(editor)]
+    if getattr(args, "path", None):
+        cmd.append(args.path)
+    subprocess.run(cmd)
+
+
 def cmd_list_models(args):
-    import json
-
-    # 顯示基礎模型
-    registry = _load_model_registry()
-    base_models = registry.get("base", [])
-
-    if base_models:
-        print("\n【基礎模型】")
-        print(f"{'Model ID':<40} {'HuggingFace 名稱':<40}")
-        print("=" * 82)
-        for model in base_models:
-            print(f"{model['id']:<40} {model['name']:<40}")
-        print("=" * 82)
-
-    # 顯示已訓練的模型
-    if not EXPERIMENTS_DIR.exists() or not any(EXPERIMENTS_DIR.iterdir()):
-        print("\n【已訓練的模型】")
-        print("尚無訓練過的模型。")
-        return
-
-    models = []
-    for exp_dir in sorted(EXPERIMENTS_DIR.iterdir()):
-        if not exp_dir.is_dir():
-            continue
-        ckpt_dir = exp_dir / "checkpoints"
-        if not ckpt_dir.exists():
-            continue
-        summary_path = exp_dir / "run_summary.json"
-        status = "?"
-        method = "?"
-        if summary_path.exists():
-            summary = json.loads(summary_path.read_text(encoding="utf-8-sig"))
-            status = summary.get("status", "?")
-            method = summary.get("method", "?")
-        checkpoints = []
-        if (ckpt_dir / "final").exists():
-            checkpoints.append("final")
-        numbered = sorted(
-            (int(p.name.split("-")[1]), p.name)
-            for p in ckpt_dir.iterdir()
-            if p.name.startswith("checkpoint-")
-        )
-        checkpoints.extend([name for _, name in numbered])
-        if checkpoints:
-            models.append((exp_dir.name, method, status, checkpoints))
-
-    print("\n【已訓練的模型】")
-    if not models:
-        print("尚無訓練過的模型。")
-        return
-
-    print(f"{'Run ID':<45} {'方法':<6} {'狀態':<10} Checkpoints")
-    print("=" * 120)
-    for run_id, method, status, ckpts in models:
-        ckpt_str = ", ".join(ckpts[:3])
-        if len(ckpts) > 3:
-            ckpt_str += f", ... ({len(ckpts)} total)"
-        print(f"{run_id:<45} {method:<6} {status:<10} {ckpt_str}")
-    print("=" * 120)
-
-    # 使用示例
-    print(f"\n用法示例：")
-    if base_models:
-        print(f"  # 使用基礎模型")
-        print(f"  python run.py chat {base_models[0]['id']}")
-    if models:
-        print(f"  # 使用訓練過的模型")
-        print(f"  python run.py chat {models[-1][0]} final")
+    from list_models import print_model_list
+    print_model_list()
 
 
 # ── test subcommands ───────────────────────────────────────────────────────────
@@ -1036,6 +979,8 @@ def _build_parser():
     ddefault.add_argument("method",   nargs="?", choices=_available_methods())
     ddefault.add_argument("dataset",  nargs="?")
     ddefault.add_argument("versions", nargs="*", metavar="vN")
+    dedit = dsub.add_parser("edit-prompts")
+    dedit.add_argument("path", nargs="?", help="資料集路徑；省略用編輯器預設")
 
     # train
     tp = sub.add_parser("train", add_help=False)
@@ -1047,6 +992,9 @@ def _build_parser():
         mp.add_argument("--dates",    nargs="+", metavar="YYYYMMDD")
         mp.add_argument("--resume",   action="store_true")
         mp.add_argument("--inline",   action="store_true")
+        if m == "prune":
+            mp.add_argument("--resume-run", dest="resume_run", default=None, metavar="run_id",
+                            help="接續中斷的 K、M 掃描，沿用同一個 run 目錄")
     retp = tsub.add_parser("retrain")
     retp.add_argument("run_ids", nargs="+", metavar="run_id")
     retp.add_argument("--inline", action="store_true")
@@ -1114,6 +1062,8 @@ def _dispatch(args, dp, tp, rp, cp):
             cmd_data_log(args)
         elif args.data_cmd == "default":
             cmd_data_default(args)
+        elif args.data_cmd == "edit-prompts":
+            cmd_data_edit_prompts(args)
         else:
             dp.print_help()
 
@@ -1175,8 +1125,11 @@ HELP_TEXT = """\
   data default                              ← 查看所有方法的資料預設
   data default <dpo|sft> dataset            ← 查看可選版本與目前預設
   data default <dpo|sft> dataset <vN ...>   ← 設定訓練時預設使用的版本
+  data edit-prompts [path]                  ← 管理 km_search 違禁題資料集（互動式）
   train dpo --config <name> [--versions vN ...] [--dates YYYYMMDD ...] [--resume]
   train sft --config <name> [--resume]
+  train prune --config <name> [--inline]     ← 裁減；mode=km_search 時自動掃描 K、M
+  train prune --resume-run <run_id>          ← 接續中斷的 K、M 掃描
   train retrain <run_id> [run_id ...]
   train continuetrain <run_id> [--config <name>] [--versions vN ...] [--dates YYYYMMDD ...] [--resume]
   result list
@@ -1199,21 +1152,25 @@ HELP_TEXT = """\
   exit\
 """
 
-def main():
+USAGE_TEXT = """\
+用法：
+  python run.py            不加參數 → 開啟 km_cos 行為編輯圖形介面
+  python run.py repl       進入互動模式（REPL）
+  python run.py <指令> …    直接執行單一指令（指令清單如下）
+
+""" + HELP_TEXT
+
+
+def _launch_km_cos_gui():
+    """無任何參數時的預設介面：km_cos（cosplay 行為編輯）圖形介面。"""
+    import subprocess
+    gui = ROOT.parent / "pipelines" / "km_cos_gui.py"
+    subprocess.run([sys.executable, str(gui)])
+
+
+def _repl(parser, dp, tp, rp, cp):
+    """舊的互動 CLI（現在只在 `python run.py repl` 時進入）。"""
     import shlex
-    parser, dp, tp, rp, cp = _build_parser()
-
-    # 非互動模式：直接從 sys.argv 執行一次指令
-    if len(sys.argv) > 1:
-        try:
-            args = parser.parse_args(sys.argv[1:])
-            _dispatch(args, dp, tp, rp, cp)
-        except SystemExit:
-            pass
-        except Exception as e:
-            print(f"錯誤：{e}")
-        return
-
     print("MLOps CLI  （輸入 help 顯示指令，exit 離開）")
     while True:
         try:
@@ -1221,7 +1178,6 @@ def main():
         except (EOFError, KeyboardInterrupt):
             print("\n離開。")
             break
-
         if not line:
             continue
         if line.lower() in ("exit", "quit", "q"):
@@ -1230,7 +1186,6 @@ def main():
         if line.lower() in ("help", "h", "?"):
             print(HELP_TEXT)
             continue
-
         try:
             tokens = shlex.split(line)
             args = parser.parse_args(tokens)
@@ -1239,6 +1194,32 @@ def main():
             pass  # argparse 解析失敗時不退出整個程序
         except Exception as e:
             print(f"錯誤：{e}")
+
+
+def main():
+    parser, dp, tp, rp, cp = _build_parser()
+    argv = sys.argv[1:]
+
+    # 無任何參數 → 預設開 km_cos 圖形介面（這個訓練方法的專屬介面）
+    if not argv:
+        _launch_km_cos_gui()
+        return
+    # 頂層說明（parser 以 add_help=False 建立，-h/--help 在這裡自行攔截）
+    if argv[0] in ("-h", "--help", "help"):
+        print(USAGE_TEXT)
+        return
+    # `run.py repl` → 舊的互動模式
+    if argv == ["repl"]:
+        _repl(parser, dp, tp, rp, cp)
+        return
+    # 其餘：一次性子命令
+    try:
+        args = parser.parse_args(argv)
+        _dispatch(args, dp, tp, rp, cp)
+    except SystemExit:
+        pass
+    except Exception as e:
+        print(f"錯誤：{e}")
 
 
 if __name__ == "__main__":

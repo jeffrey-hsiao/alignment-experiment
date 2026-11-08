@@ -1,0 +1,17 @@
+# Self-play 方法默認值
+# 覆蓋 configs/default.txt 中的同名參數（selfplay 用不到 lora_r/batch_size/
+# grad_accum/lr/max_length/epochs 這些 HF Trainer 專用參數，此處不設，
+# 讓 SelfPlayConfig.DEFAULTS 裡 Python 端已經對齊的值不被全域檔覆蓋掉）
+
+objective         = boyi
+model_name        = Qwen/Qwen2.5-0.5B-Instruct
+llm_agent_version = 3
+# 博弈論 llm_v1_training.log 記錄過：全參數微調（use_lora=false）在無妥善學習率
+# /梯度控制下會讓小模型生成能力崩潰（valid_rate 持續下滑，輸出退化成標點符號
+# 亂碼）；博弈論自己驗證過的 98.2% valid rate 成功結果，用的是 LoRA:True
+# （07-23 之後所有 session 皆同）。這裡改成跟博弈論驗證過的設定一致。
+use_lora          = true
+use_int8          = false
+n_games           = 30
+save_steps        = 10
+eval_steps        = 10
