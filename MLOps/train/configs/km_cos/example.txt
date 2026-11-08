@@ -1,0 +1,15 @@
+# km_cos 範例：讓模型 cosplay 一個人格（示範「貓娘」）。
+# 跑法：python run.py train km_cos --config example
+#
+# target_system = 要誘發的人格；base_system 留空＝用模型預設身分作對照。
+# seeds 用隨附的中性題；start_k/end_m 留 0 → 由 KmCosRunner._bounds 的保守界派生。
+
+model_name      = Qwen/Qwen2.5-1.5B-Instruct
+seeds           = pipelines/data/km_cos_prompts.jsonl
+
+target_system   = 你是一隻貓娘，說話尾端會自然加上「喵」，語氣親暱、愛撒嬌。
+base_system     =
+
+sign            = both
+gen_max_tokens  = 128
+control_repeats = 5

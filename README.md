@@ -122,8 +122,8 @@ python MLOps/run.py train dpo --config v1
 python MLOps/run.py train dpo --config v1 --versions v1
 python MLOps/run.py train dpo --config v1 --versions v1 v2 --dates 20260508
 
-# 續傳
-python MLOps/run.py train dpo --config v1 --resume
+# 續傳（接續中斷的 run，通用旗標，需指定 run_id）
+python MLOps/run.py train dpo --resume <run_id>
 
 # SFT 劣化訓練
 python MLOps/run.py train sft --config v1

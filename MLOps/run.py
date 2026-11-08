@@ -8,7 +8,7 @@ MLOps/run.py  —  alignment-experiment CLI
 
   python MLOps/run.py train dpo --config v1
   python MLOps/run.py train dpo --config v1 --dates 20260508 20260531
-  python MLOps/run.py train dpo --config v1 --resume
+  python MLOps/run.py train dpo --resume <run_id>
   python MLOps/run.py train sft --config v1
 
   python MLOps/run.py result list
@@ -368,8 +368,19 @@ def _train_cmd(script_path: Path, config_name: str, exp_dir: Path, summary_path:
 
 # ── train subcommands ──────────────────────────────────────────────────────────
 
-def _resume_prune_run(args):
-    """接續 km_search：沿用同一個 run 目錄。--resume 會開新的 run_id，接不回原本的格子。"""
+def _resume_run(args):
+    """接續中斷的 run：用 run_id 回到原目錄，讓對應的 train_<method>.py 接自己的進度。
+
+    通用於所有方法，不為每個方法寫分支——只從 run 的 summary 抓回 method / config /
+    hyperparams / 資料規格，原封送回同一個啟動器，由各自的 trainer 接自己的狀態：
+      - 梯度類（dpo/sft/…）：--resume 讓 BaseTrainer 從 output_dir 既有的 HF checkpoint
+        （optimizer/step）接；
+      - 掃描類（prune/km_search、km_cos）：Runner 從自訂的 km_state.json 既有格子接。
+    launcher 唯一跟方法有關的就是 train_{method}.py 這個檔名，由 summary["method"] 推得。
+
+    與 continuetrain 不同：這是「把被中斷的同一個 run 跑完」（同 run_id、同資料、同
+    config），不是「拿成品再長出新世代」。所以沿用原 exp_dir，不開新 run_id。
+    """
     run_id  = args.resume_run
     exp_dir = EXPERIMENTS_DIR / run_id
     summary_path = exp_dir / "run_summary.json"
@@ -377,18 +388,35 @@ def _resume_prune_run(args):
         print(f"找不到 run：{run_id}")
         return
     summary = json.loads(summary_path.read_text(encoding="utf-8-sig"))
-    if summary.get("method") != "prune" or summary.get("hyperparams", {}).get("mode") != "km_search":
-        print(f"{run_id} 不是 prune 的 K、M 掃描")
+    method   = summary.get("method")
+    _cfg_cls = _get_cfg_cls(method)
+    if _cfg_cls is None:
+        print(f"{run_id} 的訓練方法「{method}」無法辨識，無法接續")
         return
     if summary.get("status") == "completed":
         print(f"{run_id} 已經完成")
         return
+    script_path = TRAIN_DIR / "scripts" / f"train_{method}.py"
+    if not script_path.exists():
+        print(f"訓練腳本不存在：{script_path}")
+        return
+    config_name = summary.get("config")
+    hyperparams = summary.get("hyperparams")
+    if not config_name or hyperparams is None:
+        print(f"{run_id} 的 summary 缺少 config/hyperparams，無法接續")
+        return
+    # 重放當初的資料規格；梯度類需要，掃描類（NEEDS_DATA=False）不吃資料
+    needs_data = getattr(_cfg_cls, "NEEDS_DATA", True)
+    if needs_data:
+        all_trains, all_vals, *_ = _resolve_train_data(
+            method, summary.get("data_versions"), summary.get("data_dates"), needs_data)
+    else:
+        all_trains, all_vals = [], []
     summary.update(status="running", finished_at=None)
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    script_path = TRAIN_DIR / "scripts" / "train_prune.py"
-    cmd = _train_cmd(script_path, summary["config"], exp_dir, summary_path, [], []) + ["--resume"]
+    cmd = _train_cmd(script_path, config_name, exp_dir, summary_path, all_trains, all_vals) + ["--resume"]
     # 用這個 run 當初的超參數，中途改動或刪除設定檔都不影響接續路徑
-    cmd += ["--overrides_json", json.dumps(summary["hyperparams"])]
+    cmd += ["--overrides_json", json.dumps(hyperparams)]
     print(f"[{run_id}] 接續...")
     _launch(cmd, getattr(args, "inline", False), run_id)
 
@@ -397,13 +425,12 @@ def cmd_train(args):
     import shutil
 
     if getattr(args, "resume_run", None):
-        return _resume_prune_run(args)
+        return _resume_run(args)
 
     method      = args.method
     config_name = getattr(args, "config", None) or _get_default(method)
     versions = getattr(args, "versions", None) or _get_data_default(method)
     dates    = getattr(args, "dates", None)
-    resume   = getattr(args, "resume", False)
 
     _cfg_cls   = _get_cfg_cls(method)
     needs_data = getattr(_cfg_cls, "NEEDS_DATA", True)
@@ -447,8 +474,6 @@ def cmd_train(args):
 
     print(f"\n[{run_id}] 開始訓練...")
     cmd = _train_cmd(script_path, config_name, exp_dir, summary_path, all_trains, all_vals)
-    if resume:
-        cmd.append("--resume")
 
     _launch(cmd, getattr(args, "inline", False), run_id)
 
@@ -581,7 +606,6 @@ def cmd_continuetrain(args):
     config_name = getattr(args, "config",   None) or _get_default(method)
     versions    = getattr(args, "versions", None) or _get_data_default(method)
     dates       = getattr(args, "dates",    None)
-    resume      = getattr(args, "resume",   False)
 
     _cfg_cls    = _get_cfg_cls(method)
     needs_data  = getattr(_cfg_cls, "NEEDS_DATA", True)
@@ -630,8 +654,6 @@ def cmd_continuetrain(args):
     print(f"\n[{run_id}] 接續訓練（源：{source_run_id} → {base_ckpt.name}）...")
     cmd = _train_cmd(script_path, config_name, exp_dir, new_summary_path, all_trains, all_vals)
     cmd += ["--base_model", str(base_ckpt)]
-    if resume:
-        cmd.append("--resume")
 
     _launch(cmd, getattr(args, "inline", False), run_id)
 
@@ -1001,11 +1023,11 @@ def _build_parser():
         mp.add_argument("--config",   default=None)
         mp.add_argument("--versions", nargs="+", metavar="vN")
         mp.add_argument("--dates",    nargs="+", metavar="YYYYMMDD")
-        mp.add_argument("--resume",   action="store_true")
         mp.add_argument("--inline",   action="store_true")
-        if m == "prune":
-            mp.add_argument("--resume-run", dest="resume_run", default=None, metavar="run_id",
-                            help="接續中斷的 K、M 掃描，沿用同一個 run 目錄")
+        # 單一、通用的接續入口：指定要接的 run_id，從它的 summary 訊息驅動還原
+        # config/資料/hyperparams 並續跑（見 _resume_run）。所有方法共用，不分梯度/掃描。
+        mp.add_argument("--resume", dest="resume_run", default=None, metavar="run_id",
+                        help="接續中斷的 run：指定其 run_id，沿用原目錄（所有方法通用）")
     retp = tsub.add_parser("retrain")
     retp.add_argument("run_ids", nargs="+", metavar="run_id")
     retp.add_argument("--inline", action="store_true")
@@ -1014,7 +1036,6 @@ def _build_parser():
     ctp.add_argument("--config",   default=None)
     ctp.add_argument("--versions", nargs="+", metavar="vN")
     ctp.add_argument("--dates",    nargs="+", metavar="YYYYMMDD")
-    ctp.add_argument("--resume",   action="store_true")
     ctp.add_argument("--inline",   action="store_true")
 
     # result
@@ -1137,12 +1158,12 @@ HELP_TEXT = """\
   data default <dpo|sft> dataset            ← 查看可選版本與目前預設
   data default <dpo|sft> dataset <vN ...>   ← 設定訓練時預設使用的版本
   data edit-prompts [path]                  ← 管理 km_search 違禁題資料集（互動式）
-  train dpo --config <name> [--versions vN ...] [--dates YYYYMMDD ...] [--resume]
-  train sft --config <name> [--resume]
+  train dpo --config <name> [--versions vN ...] [--dates YYYYMMDD ...]
+  train sft --config <name>
   train prune --config <name> [--inline]     ← 裁減；mode=km_search 時自動掃描 K、M
-  train prune --resume-run <run_id>          ← 接續中斷的 K、M 掃描
+  train <method> --resume <run_id>           ← 接續中斷的 run（通用、訊息驅動，沿用原目錄）
   train retrain <run_id> [run_id ...]
-  train continuetrain <run_id> [--config <name>] [--versions vN ...] [--dates YYYYMMDD ...] [--resume]
+  train continuetrain <run_id> [--config <name>] [--versions vN ...] [--dates YYYYMMDD ...]
   result list
   result show <run_id>
   result inspect <run_id>

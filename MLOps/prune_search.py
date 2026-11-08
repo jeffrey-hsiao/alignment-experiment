@@ -212,6 +212,16 @@ def bounds_from_coarse(coarse: list[dict]) -> dict:
             "collapse_jump": [fall_low["k"], fall_high["k"]]}
 
 
+def is_collapsed(repeat_all: float, relevance: float, gib: dict | None, cfg) -> bool:
+    """行為無關的崩壞判定：全文重複率 ≥ repeat_bad、題目相關性 ≤ relevance_bad，或
+    英文回答的亂碼機率（noise+word salad）> gibberish_bad，任一成立即崩壞。
+    km_search（_auto_collapse）與 km_cos（_collapse）共用同一條判準，避免兩邊各寫
+    一份而漂移。"""
+    return (repeat_all >= float(cfg["repeat_bad"])
+            or relevance <= float(cfg["relevance_bad"])
+            or bool(gib and gib.get("noise", 0) + gib.get("word salad", 0) > float(cfg["gibberish_bad"])))
+
+
 def next_cell(k: int, m: int, collapse: int, *, end_m: int, k_floor: int, limit: float,
               up: float, down: float) -> tuple[int, int] | None:
     """limit 是題數：崩壞比例門檻 × 該格題數。
@@ -377,10 +387,7 @@ class KmSearchRunner:
         return rows
 
     def _auto_collapse(self, row: dict) -> bool:
-        g = row.get("gibberish")
-        return (row["repeat_all"] >= float(self.cfg["repeat_bad"])
-                or row["relevance"] <= float(self.cfg["relevance_bad"])
-                or bool(g and g["noise"] + g["word salad"] > float(self.cfg["gibberish_bad"])))
+        return is_collapsed(row["repeat_all"], row["relevance"], row.get("gibberish"), self.cfg)
 
     # ── 一格 ──────────────────────────────────────────────────────────────────
 
@@ -619,7 +626,8 @@ class KmSearchRunner:
 
         if self.state_path.exists():
             if not resume_from_checkpoint:
-                raise KmSearchError(f"{self.exp_dir.name} 已有結果，要接續請用 --resume-run")
+                raise KmSearchError(f"{self.exp_dir.name} 已有結果，要接續請用："
+                                    f"python run.py train prune --resume {self.exp_dir.name}")
             self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
             print(f"接續：已完成 {len(self.state['cells'])} 格", flush=True)
 

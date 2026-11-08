@@ -30,7 +30,7 @@ from behavior_regroup import generate_all  # noqa: E402
 from prune_utils import apply_reverse_mask, apply_prune_mask, write_prune_checkpoint  # noqa: E402
 from prune_search import (  # noqa: E402  ★共用引擎
     POSITIVE, NEGATIVE, rate_order, select_tables, run_fine, run_coarse,
-    load_source, split_by_pair, stratified_order,
+    load_source, split_by_pair, stratified_order, is_collapsed,
 )
 
 
@@ -139,10 +139,7 @@ class KmCosRunner:
         out = []
         for r in rows:
             g = gib.get(r["response"])
-            bad = (r["repeat_all"] >= float(self.cfg["repeat_bad"])
-                   or rel[(r["text"], r["response"])] <= float(self.cfg["relevance_bad"])
-                   or bool(g and g.get("noise", 0) + g.get("word salad", 0) > float(self.cfg["gibberish_bad"])))
-            out.append(bad)
+            out.append(is_collapsed(r["repeat_all"], rel[(r["text"], r["response"])], g, self.cfg))
         return out
 
     def _cos_score(self, rows: list[dict]) -> float:
@@ -252,7 +249,8 @@ class KmCosRunner:
         from transformers import TrainerControl, TrainerState
 
         if self.state_path.exists() and not resume_from_checkpoint:
-            raise KmCosError(f"{self.exp_dir.name} 已有結果，要接續請用 --resume-run")
+            raise KmCosError(f"{self.exp_dir.name} 已有結果，要接續請用："
+                             f"python run.py train km_cos --resume {self.exp_dir.name}")
         state, control = TrainerState(), TrainerControl()
         fake_args = types.SimpleNamespace(output_dir=str(self.output_dir))
         for cb in self.callbacks:

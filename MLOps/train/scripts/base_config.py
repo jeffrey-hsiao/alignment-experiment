@@ -231,6 +231,58 @@ class PruneConfig(BaseConfig):
     }
 
 
+class KmCosConfig(BaseConfig):
+    """km_cos（cosplay 行為編輯）：與 prune 並列的方法，但資料與指標都不同——
+    吃「單句中性題 + 一對對比 system prompt」，用對比相關性（reranker）選最佳格，
+    而非 prune 的有害/無害成對題 + 拒絕判定。搜尋引擎（run_coarse/run_fine）與
+    checkpoint 格式跟 prune 共用，執行邏輯見 prune_km_cos.KmCosRunner。
+
+    NEEDS_DATA=False：種子來自 seeds（中性題），不吃 data/unsafe+normal。
+    這裡只保留 km_cos 真正用到的欄位，不帶 prune 的 neurons/probe/judge 等。
+    """
+
+    METHOD = "km_cos"
+    NEEDS_DATA = False
+    DEFAULTS = {
+        **BaseConfig.DEFAULTS,
+        "objective":      "normal",
+        "model_name":     "Qwen/Qwen2.5-1.5B-Instruct",
+        "mode":           "km_cos",
+        # 中性題種子：每行單句 {id, text, group, domain, lang}，不是有害/無害成對
+        "seeds":          "pipelines/data/km_cos_prompts.jsonl",
+        # 對比 system prompt：target=要誘發的人格；base 留空＝用模型預設身分作對照
+        # （短的用 inline，長的用 *_file 指向檔案路徑）
+        "target_system":      "",
+        "target_system_file": "",
+        "base_system":        "",
+        "base_system_file":   "",
+        # 選點方向（沿用 km_search 雙表語意）；reverse 固定開（誘發＝取負放大人格方向）
+        "sign":           "both",
+        "gen_max_tokens": 128,
+        # 排序集 / 調參集切分（驗證集為剩下的）
+        "rank_ratio":     0.6,
+        "tune_ratio":     0.2,
+        "n_steps":        8,
+        "split_seed":     0,
+        # K、M 搜尋（與 km_search 共用 run_coarse/run_fine）；留 0 由保守界派生
+        "start_k":        0,
+        "end_m":          0,
+        "k_floor":        0,
+        "km_up":          1.25,
+        "k_down":         0.8,
+        "collapse_ratio": 0.10,
+        "control_repeats": 5,
+        # 崩壞偵測門檻（同 km_search，來自 analysis/quality_calibrate.py）
+        "repeat_bad":     0.1442,
+        "relevance_bad":  -7.6,
+        "gibberish_bad":  0.5,
+        # True 時 generation_test 只寫計數、不列原文
+        "redact_content": False,
+        "save_steps":     1,
+        "eval_steps":     1,
+    }
+
+
 class ArenaConfig(BaseConfig):
     """多智能體競技場：MCCFR/MCT 傳統 agent 互打訓練，訓練經驗來自實際對局，
     不吃 data/unsafe+normal。跟 selfplay 一樣屬於卡牌博弈訓練目標家族

@@ -17,8 +17,10 @@ python run.py data default <method> dataset <vN ...>  # 設置預設數據版本
 
 ### 訓練
 ```bash
-python run.py train dpo --config <name> [--versions vN ...] [--resume]
-python run.py train sft --config <name> [--resume]
+python run.py train dpo --config <name> [--versions vN ...]
+python run.py train sft --config <name>
+python run.py train km_cos --config <name>                # 行為編輯（cosplay 誘發）
+python run.py train <method> --resume <run_id>            # 接續中斷的 run（通用，需 run_id）
 python run.py train selfplay --config <name>               # 不吃 data/unsafe+normal
 python run.py train arena --config <name>                 # 多智能體競技場（MCCFR/MCT），同上
 python run.py train retrain <run_id> [run_id ...]

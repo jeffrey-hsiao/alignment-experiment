@@ -21,7 +21,7 @@ model_loader 認得這個格式，所以 run.py chat <run_id> <checkpoint> 可�
   python run.py train prune --config v1
   python run.py train prune --config v1_control    # 反向對照組
   python run.py train prune --config km_v1         # 自動掃描 K、M（見 prune_search.py）
-  python run.py train prune --resume-run <run_id>  # 接續中斷的 K、M 掃描
+  python run.py train prune --resume <run_id>      # 接續中斷的掃描（通用旗標）
 """
 
 import argparse
@@ -378,8 +378,8 @@ class PruneTrainer(BaseTrainer):
             sys.exit(1)
         except KeyboardInterrupt:
             finish("interrupted")
-            print(f"\n已中斷，完成的格子都已存檔。接續：python run.py train prune "
-                  f"--resume-run {self.output_dir.parent.name}")
+            print(f"\n已中斷，完成的格子都已存檔。接續：python run.py train "
+                  f"{self.CONFIG_CLASS.METHOD} --resume {self.output_dir.parent.name}")
             sys.exit(0)
 
     def run(self):

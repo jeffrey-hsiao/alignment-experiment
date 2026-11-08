@@ -21,7 +21,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 MLOPS = REPO / "MLOps"
-PRUNE_CFG_DIR = MLOPS / "train" / "configs" / "prune"
+KMCOS_CFG_DIR = MLOPS / "train" / "configs" / "km_cos"
 EXPERIMENTS = MLOPS / "experiments"
 DEFAULT_SEEDS = "pipelines/data/km_cos_prompts.jsonl"
 DEFAULT_BASE = "You are a helpful assistant."
@@ -38,15 +38,14 @@ def write_run_files(name: str, target_system: str, base_system: str, model: str,
                     seeds: str, start_k: int, end_m: int, sign: str,
                     control_repeats: int, gen_max_tokens: int) -> Path:
     """寫出 persona 檔 + km_cos config 檔,回傳 config 路徑。純檔案操作,可單獨測。"""
-    PRUNE_CFG_DIR.mkdir(parents=True, exist_ok=True)
-    persona = PRUNE_CFG_DIR / f"persona_{name}.txt"
+    KMCOS_CFG_DIR.mkdir(parents=True, exist_ok=True)
+    persona = KMCOS_CFG_DIR / f"persona_{name}.txt"
     persona.write_text(target_system.strip() + "\n", encoding="utf-8")
-    base_path = PRUNE_CFG_DIR / f"persona_base_{name}.txt"
+    base_path = KMCOS_CFG_DIR / f"persona_base_{name}.txt"
     base_path.write_text((base_system or DEFAULT_BASE).strip() + "\n", encoding="utf-8")
-    cfg = PRUNE_CFG_DIR / f"{name}.txt"
+    cfg = KMCOS_CFG_DIR / f"{name}.txt"
     cfg.write_text(
         f"""# km_cos(cosplay 行為編輯)— 由 GUI 產生
-mode                = km_cos
 seeds               = {seeds}
 model_name          = {model}
 target_system_file  = {persona.relative_to(REPO).as_posix()}
@@ -62,13 +61,30 @@ gen_max_tokens      = {gen_max_tokens}
 
 
 def launch(config_stem: str) -> None:
-    subprocess.Popen([sys.executable, "run.py", "train", "prune", "--config", config_stem],
+    subprocess.Popen([sys.executable, "run.py", "train", "km_cos", "--config", config_stem],
                      cwd=str(MLOPS))
 
 
-def latest_run_dir(config_stem: str):
-    cand = sorted(EXPERIMENTS.glob(f"prune_{config_stem}_*"), key=lambda p: p.name)
-    return cand[-1] if cand else None
+def existing_run_names() -> set:
+    """啟動前的 run 目錄名快照。"""
+    return {p.name for p in EXPERIMENTS.iterdir() if p.is_dir()} if EXPERIMENTS.exists() else set()
+
+
+def newest_run_dir(before: set, config_stem: str):
+    """新命名（<基底模型>_NNN）不再含 config 名，無法用 config 名 glob。改成：在
+    『啟動前快照』之後新出現的 run 目錄裡，挑 run_summary.config == 本次 GUI 產生的
+    config_stem 的那個——用 summary 精準對應，避免抓到並行啟動的其他 run。"""
+    if not EXPERIMENTS.exists():
+        return None
+    fresh = [p for p in EXPERIMENTS.iterdir() if p.is_dir() and p.name not in before]
+    for p in sorted(fresh, key=lambda p: p.stat().st_mtime, reverse=True):
+        sm = p / "run_summary.json"
+        try:
+            if sm.exists() and json.loads(sm.read_text(encoding="utf-8")).get("config") == config_stem:
+                return p
+        except Exception:
+            continue
+    return None
 
 
 def read_progress(run_dir: Path) -> dict:
@@ -155,6 +171,8 @@ def main():
         if not (REPO / seeds_var.get()).exists():
             messagebox.showwarning("找不到種子題", seeds_var.get()); return
         stem = "km_cos_gui_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        state["before"] = existing_run_names()   # 啟動前快照，poll 用來認出新 run 目錄
+        state["run_dir"] = None                  # 重置，否則第二次發射會沿用上一個 run 的進度
         try:
             write_run_files(stem, tgt, base.get("1.0", "end"), model_box.get(),
                             seeds_var.get(), int(start_k.get()), int(end_m.get()),
@@ -171,7 +189,7 @@ def main():
         if not stem:
             return
         if state["run_dir"] is None:
-            state["run_dir"] = latest_run_dir(stem)
+            state["run_dir"] = newest_run_dir(state.get("before", set()), stem)
         rd = state["run_dir"]
         if rd is None:
             status_var.set("等待 run 目錄出現…"); root.after(5000, poll); return

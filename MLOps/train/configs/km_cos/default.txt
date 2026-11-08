@@ -1,0 +1,11 @@
+# km_cos 方法層預設（載入順序：Python DEFAULTS → 本檔 → 指定設定檔）。
+# 多數值用 base_config.py 的 KmCosConfig.DEFAULTS 即可，這裡只覆寫方法層想統一
+# 調整的項目。預設留空，讓具名設定檔（或 GUI 產生的設定）自己決定人格與參數。
+#
+# 可調欄位見 KmCosConfig.DEFAULTS，常用：
+#   target_system / target_system_file  要誘發的人格
+#   base_system   / base_system_file    對照身分（留空＝模型預設）
+#   seeds        中性題種子（預設 pipelines/data/km_cos_prompts.jsonl）
+#   sign         both | positive | negative
+#   start_k / end_m   留 0 由保守界派生；指定則固定範圍
+#   control_repeats   隨機對照次數

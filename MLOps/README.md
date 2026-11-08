@@ -101,11 +101,13 @@ python run.py data default <method> dataset <vN ...>  # 設置預設數據版本
 
 ### 訓練
 ```bash
-python run.py train dpo --config <name> [--versions vN ...] [--resume]
-python run.py train sft --config <name> [--resume]
+python run.py train dpo --config <name> [--versions vN ...]
+python run.py train sft --config <name>
 python run.py train selfplay --config <name>               # 不吃 data/unsafe+normal，見下方說明
 python run.py train arena --config <name>                 # 多智能體競技場（MCCFR/MCT），同上
 python run.py train prune --config <name>                 # 神經元裁減（無梯度），見下方說明
+python run.py train km_cos --config <name>                # 行為編輯（cosplay 誘發），見下方說明
+python run.py train <method> --resume <run_id>            # 接續中斷的 run（通用、訊息驅動）
 python run.py train retrain <run_id> [run_id ...]
 python run.py train continuetrain <run_id> [--config <name>]
 ```
@@ -154,7 +156,7 @@ python run.py train arena --config v1      # MCCFR/MCT 傳統 agent 互打，MMR
 python run.py train prune --config v1           # 裁減候選拒絕神經元
 python run.py train prune --config v1_control    # 反向對照組（必跑，見下）
 python run.py train prune --config km_v1         # 自動掃描 K、M（見下方「K、M 掃描」）
-python run.py train prune --resume-run <run_id>  # 接續中斷的 K、M 掃描
+python run.py train prune --resume <run_id>      # 接續中斷的掃描（通用旗標）
 ```
 流程固定兩步，所以 baseline 與裁減後的數字在同一次 run 內可比：
 
