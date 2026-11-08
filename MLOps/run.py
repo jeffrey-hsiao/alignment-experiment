@@ -817,12 +817,15 @@ def cmd_config_default(args):
 
     if method is None:
         # 顯示所有方法的現況
+        print("\n【各方法的預設設定檔】")
         for m in _available_methods():
-            current  = _get_default(m)
-            options  = _list_configs(m)
-            status   = current if current else "（未設定）"
-            opts_str = "  可選：" + "、".join(options) if options else ""
-            print(f"  {m}: {status}{opts_str}")
+            current = _get_default(m)
+            options = _list_configs(m)
+            print(f"\n  {m}")
+            print(f"    預設：{current if current else '（未設定）'}")
+            if options:
+                print(f"    可選：{'、'.join(options)}")
+        print()
         return
 
     if name is None:

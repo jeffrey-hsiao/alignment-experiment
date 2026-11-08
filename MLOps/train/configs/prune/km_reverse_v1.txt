@@ -1,4 +1,5 @@
-# 正式:雙表選點 + 翻轉向量 + 順從題測試。範圍沿用上次粗測(K=10240→M=81920)、可比。
+# 正式:雙表選點 + 翻轉向量 + 順從題測試。也是 prune 的方法預設(.default)。
+# start_k/end_m 留 0 → 由粗測自動決定範圍(路徑 B),不鎖死某組 K/M。
 # ranking 重新產生(含負向率欄位);分組沿用資料集(Qwen 1.5B),與上輪一致。
 
 mode            = km_search
@@ -12,6 +13,6 @@ sign            = both
 reverse_type    = true
 test_complied   = true
 
-start_k         = 10240
-end_m           = 81920
+start_k         = 0
+end_m           = 0
 control_repeats = 5

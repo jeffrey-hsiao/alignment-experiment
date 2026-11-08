@@ -28,8 +28,11 @@ def read_summary(path: Path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def scan_trained_models() -> list[tuple[str, str, str, list[str]]]:
-    """回傳 [(run_id, method, status, checkpoints)]，只列出至少有一個 checkpoint 的 run。"""
+def scan_trained_models() -> list[tuple[str, str, str, str, list[str]]]:
+    """回傳 [(run_id, method, status, config, checkpoints)]，只列出至少有一個 checkpoint 的 run。
+
+    config（設定檔名）從前新 run_id 命名改用「基底模型+序號」後，設定檔不再出現在
+    run_id 裡，因此另外帶出來供列表顯示。"""
     if not EXPERIMENTS_DIR.exists():
         return []
 
@@ -43,10 +46,12 @@ def scan_trained_models() -> list[tuple[str, str, str, list[str]]]:
         summary_path = exp_dir / "run_summary.json"
         status = "?"
         method = "?"
+        config = "?"
         if summary_path.exists():
             summary = read_summary(summary_path)
             status = summary.get("status", "?")
             method = summary.get("method", "?")
+            config = summary.get("config", "?")
         checkpoints = []
         if (ckpt_dir / "final").exists():
             checkpoints.append("final")
@@ -57,5 +62,5 @@ def scan_trained_models() -> list[tuple[str, str, str, list[str]]]:
         )
         checkpoints.extend([name for _, name in numbered])
         if checkpoints:
-            models.append((exp_dir.name, method, status, checkpoints))
+            models.append((exp_dir.name, method, status, config, checkpoints))
     return models

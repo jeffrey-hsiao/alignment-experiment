@@ -24,14 +24,14 @@ def print_model_list():
         print("尚無訓練過的模型。")
         return
 
-    print(f"{'Run ID':<45} {'方法':<6} {'狀態':<10} Checkpoints")
-    print("=" * 120)
-    for run_id, method, status, ckpts in models:
+    print(f"{'Run ID':<52} {'方法':<6} {'狀態':<10} {'設定檔':<28} Checkpoints")
+    print("=" * 150)
+    for run_id, method, status, config, ckpts in models:
         ckpt_str = ", ".join(ckpts[:3])
         if len(ckpts) > 3:
             ckpt_str += f", ... ({len(ckpts)} total)"
-        print(f"{run_id:<45} {method:<6} {status:<10} {ckpt_str}")
-    print("=" * 120)
+        print(f"{run_id:<52} {method:<6} {status:<10} {config:<28} {ckpt_str}")
+    print("=" * 150)
 
     # 使用示例
     print(f"\n用法示例：")
