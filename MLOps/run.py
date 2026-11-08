@@ -821,10 +821,14 @@ def cmd_config_default(args):
         for m in _available_methods():
             current = _get_default(m)
             options = _list_configs(m)
+            cfg_dir = _rel(TRAIN_DIR / "configs" / m)
             print(f"\n  {m}")
-            print(f"    預設：{current if current else '（未設定）'}")
+            if current:
+                print(f"    預設：{_rel(TRAIN_DIR / 'configs' / m / f'{current}.txt')}")
+            else:
+                print("    預設：（未設定）")
             if options:
-                print(f"    可選：{'、'.join(options)}")
+                print(f"    可選（{cfg_dir}/）：{'、'.join(options)}")
         print()
         return
 
@@ -832,9 +836,13 @@ def cmd_config_default(args):
         # 顯示單一方法現況與可選項
         current = _get_default(method)
         options = _list_configs(method)
-        print(f"  現在預設：{current if current else '（未設定）'}")
+        cfg_dir = _rel(TRAIN_DIR / "configs" / method)
+        if current:
+            print(f"  現在預設：{_rel(TRAIN_DIR / 'configs' / method / f'{current}.txt')}")
+        else:
+            print("  現在預設：（未設定）")
         if options:
-            print(f"  可選設定：{', '.join(options)}")
+            print(f"  可選設定（{cfg_dir}/）：{'、'.join(options)}")
         return
 
     # 設定預設
