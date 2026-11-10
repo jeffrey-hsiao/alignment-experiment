@@ -76,27 +76,39 @@ def build_messages(user: str, system: str | None = None,
     return msgs
 
 
+def _merge_system_when_unsupported(messages: list[dict]) -> list[dict]:
+    """模板不接受 system 角色時（如 Gemma）的單一處理：把開頭的 system 併入第一則
+    user；找不到 user 就併入第一則訊息，**絕不丟棄 system**。開頭沒有 system 則原樣
+    回傳（呼叫端據此判斷「不是 system 角色問題」而往上拋）。"""
+    if not messages or messages[0].get("role") != "system":
+        return messages
+    sys_text = messages[0].get("content", "")
+    rest = messages[1:]
+    for i, m in enumerate(rest):
+        if m.get("role") == "user":
+            merged = {**m, "content": f"{sys_text}\n\n{m.get('content', '')}"}
+            return rest[:i] + [merged] + rest[i + 1:]
+    if rest:  # 沒有 user turn：併進第一則訊息，仍不丟 system
+        return [{**rest[0], "content": f"{sys_text}\n\n{rest[0].get('content', '')}"}] + rest[1:]
+    return rest
+
+
 def render_conversation(tokenizer, messages: list[dict], *,
                         add_generation_prompt: bool = True, tokenize: bool = False):
-    """套用 chat template 到完整多輪對話 messages（[{role, content}, ...]，開頭可含 system）。
+    """套用 chat template 到完整對話 messages（[{role, content}, ...]，開頭可含 system）。
 
-    與 render_chat 同樣處理「模板不接受 system 角色」的情況（如 Gemma）：把 system
-    併入第一則 user 後重試。給 chat 多輪對話用；單輪仍走 render_chat。
+    模板不接受 system 角色時（Gemma），用 _merge_system_when_unsupported 把 system
+    併入第一則 user 後重試——**fallback 只有這一份**，render_chat 也走這裡。
     """
     try:
         return tokenizer.apply_chat_template(
             messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
     except _TemplateError:
-        if messages and messages[0].get("role") == "system":
-            sys_text = messages[0]["content"]
-            rest = messages[1:]
-            if rest and rest[0].get("role") == "user":
-                merged = [{"role": "user", "content": f"{sys_text}\n\n{rest[0]['content']}"}] + rest[1:]
-            else:
-                merged = rest
-            return tokenizer.apply_chat_template(
-                merged, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
-        raise
+        merged = _merge_system_when_unsupported(messages)
+        if merged is messages:   # 開頭沒有 system 可併 → 不是 system 角色問題，原樣拋出
+            raise
+        return tokenizer.apply_chat_template(
+            merged, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
 
 
 def render_chat(tokenizer, user: str, *, system: str | None = None,
@@ -107,22 +119,13 @@ def render_chat(tokenizer, user: str, *, system: str | None = None,
 
     - assistant 給定 → 視為完整訓練樣本，add_generation_prompt 預設 False；
       assistant 為 None → 推理用，add_generation_prompt 預設 True。呼叫端也可明確覆寫。
-    - 若模板不接受 system 角色（jinja 會丟例外，如 Gemma），自動把 system 併進
-      第一則 user 後重試，確保跨家族可用。對接受 system 的模型（Qwen/Llama/Phi/
-      SmolLM2）走正常路徑，輸出與先前逐字相同。
+    - 單輪的單一入口；組好 messages 後委派給 render_conversation，所以「模板不接受
+      system 角色」(Gemma) 的 fallback 只有一份、兩者共用。對接受 system 的模型
+      （Qwen/Llama/Phi/SmolLM2）走正常路徑，輸出與先前逐字相同。
     回傳型別與 tokenizer.apply_chat_template 相同。
     """
     if add_generation_prompt is None:
         add_generation_prompt = assistant is None
     msgs = build_messages(user, system=system, assistant=assistant)
-    try:
-        return tokenizer.apply_chat_template(
-            msgs, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
-    except _TemplateError:
-        # 模板明確拒絕（常見於 Gemma：system 角色觸發 raise_exception）：把 system
-        # 併入第一則 user 再試一次。其他類型的錯誤不在此吞掉，直接往上拋。
-        if system:
-            merged = build_messages(f"{system}\n\n{user}", system=None, assistant=assistant)
-            return tokenizer.apply_chat_template(
-                merged, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
-        raise
+    return render_conversation(tokenizer, msgs,
+                               add_generation_prompt=add_generation_prompt, tokenize=tokenize)

@@ -14,9 +14,11 @@ control_repeats = 0
 
 # ── prune_v2 單調掃描（取代粗測+細搜；詳見 base_config.PruneV2Config / prune_v2_search.py）──
 # sweep_steps：掃完整個模型要幾個大步；step = 總神經元數 / sweep_steps（越大越細）
-# k_ratio_start/k_ratio_step：K 占比 r 的起點與每次下降量（只減不增）
-# flip_low：翻轉率低於此值 → 增加 T；否則 → 降 r
+# k_ratio_start：起始 K 占比（初始 K = round(k_ratio_start × 起始 T)）
+# k_decay：翻轉夠高時 K ×= 此值（直接乘在 K 上，整數衰減、不會浮點消失）。注意：易翻
+#          模型(小模型)用接近 1 的值(如 0.9)會跑很多格；0.5~0.7 較省。
+# flip_low：翻轉率低於此值 → 放大 T（K 等比放大維持比例）；否則 → 衰減 K
 sweep_steps       = 10
 k_ratio_start     = 0.5
-k_ratio_step      = 0.05
+k_decay           = 0.9
 flip_low          = 0.3

@@ -7,17 +7,19 @@ _select / _top_cells / final checkpoint / 報表 / 顯示），只換掉「粗�
 
 與 v1 的差異：
   - 不粗測，直接開始。
-  - 不以「M 撞 end_m」當停止條件；改用 (T, r) 單調掃描：
-      T = K + M，只增不減，每步 +（總神經元數 / sweep_steps），掃到 T=總神經元數為止。
-      r = K/T（K 占比），只減不增。
+  - 不以「M 撞 end_m」當停止條件；改用「直接操作 K」的單調掃描（不追蹤浮點 r，避免
+    r 過小消失；隱性比例 = K/T）：
+      T = K + M，起始 = 總神經元數 / sweep_steps；K 起始 = round(k_ratio_start × T)。
     每格評估後：
-      翻轉率 < flip_low → T 增一步（r 不變，K、M 等比例放大）；
-      否則              → r 降一步（T 不變，K 降、M 升）。
-    兩個單調性（T 只增、r 只減）保證不循環、必終止（T 以總神經元數為上界）。
+      翻轉率 < flip_low → 放大 T 一步，**K 等比例放大**（nK = K×newT/T）以維持隱性比例；
+      否則              → **K ×= k_decay**（整數衰減，降隱性比例，T 不變）；
+                          若再乘也無法讓 K 更小（K 已到底）→ 改放大 T。
+    K 恆為整數 ≥1（永不為 0、無比例下限）；T 每遇到「放大」必 +step，以總神經元數為上界
+    → 必終止。
   - 崩壞（is_collapsed：repeat/relevance/gibberish）照算照記錄進每格，但不參與步進，
     品質由人工覆核。
 
-resume 靠確定性重放：(T, r) 軌跡由各格的翻轉率決定，而翻轉率存在快取的 cell 裡，
+resume 靠確定性重放：(T, K) 軌跡由各格的翻轉率決定，而翻轉率存在快取的 cell 裡，
 _evaluate 以 (kind,k,m,repeat) 為鍵直接命中已完成格，不重新生成，續跑接得回去。
 """
 import json
@@ -53,29 +55,38 @@ class PruneV2Runner(KmSearchRunner):
         sweep_steps = max(1.0, float(self.cfg["sweep_steps"]))
         step = max(1, round(total / sweep_steps))
         T = int(self.cfg.get("t_start") or 0) or step
-        r = float(self.cfg["k_ratio_start"])
-        r_step = float(self.cfg["k_ratio_step"])
+        decay = float(self.cfg["k_decay"])
         flip_low = float(self.cfg["flip_low"])
+        K = max(1, min(T - 1, round(float(self.cfg["k_ratio_start"]) * T)))   # 起始 K
 
         self.state["v2"] = {"total": total, "step": step, "sweep_steps": sweep_steps,
-                            "k_ratio_start": r, "k_ratio_step": r_step, "flip_low": flip_low}
+                            "k_ratio_start": float(self.cfg["k_ratio_start"]),
+                            "k_decay": decay, "flip_low": flip_low}
         # bounds 欄位沿用給報表/顯示；v2 沒有粗測界，填掃描範圍
         self.state["bounds"] = {"source": "prune_v2", "start_k": min(T, total), "end_m": total}
         self._save_state()
-        print(f"prune_v2 掃描：總神經元 {total}，步長 {step}（1/{sweep_steps:g} ≈ {step/total:.1%}），"
-              f"起始 T={T} r={r}，flip_low={flip_low}", flush=True)
+        print(f"prune_v2 掃描：總神經元 {total}，步長 {step}（1/{sweep_steps:g}），"
+              f"起始 T={T} K={K}（隱性比例 {K / T:.2f}），decay={decay}，flip_low={flip_low}", flush=True)
+
+        def grow_T():
+            """放大 T 一步，K 等比例放大以維持隱性比例 K/T（直接操作 K，無浮點 r）。"""
+            nonlocal T, K
+            nT = T + step
+            K = max(1, round(K * nT / T))
+            T = nT
 
         while T <= total:
-            K = max(1, min(T - 1, round(r * T)))
-            M = T - K
-            cell = self._evaluate("sync", K, M)   # 內建快取 → resume 直接命中已完成格
+            K = max(1, min(T - 1, K))
+            cell = self._evaluate("sync", K, T - K)   # 內建快取 → resume 直接命中已完成格
             flip_rate = cell["flips"] / max(1, cell["n"])
             if flip_rate < flip_low:
-                T += step                  # 翻轉過低 → 總量長一步（r 不變）
+                grow_T()                    # 翻轉過低 → 放大 T（K 等比放大，維持比例）
             else:
-                r = max(0.0, r - r_step)   # 否則 → 降 K 占比
-                if r <= 0.0:
-                    T += step              # K 占比見底 → 強制總量長，確保前進與終止
+                nK = max(1, round(K * decay))
+                if nK < K:
+                    K = nK                  # 衰減 K（降隱性比例），T 不變；K 恆為整數 ≥1
+                else:
+                    grow_T()                # K 已到底（再乘也不變小）→ 改放大 T
             self._save_state()
 
         top = self._top_cells()

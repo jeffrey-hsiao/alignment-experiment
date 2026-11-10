@@ -17,10 +17,14 @@ rank_ratio      = 0.6
 tune_ratio      = 0.4
 collapse_ratio  = 0.025
 
+# 沿用 _001 已完成的排序探測（同模型/seeds/split/分組/n_steps → ranking 相同）；
+# 分組亦自動沿用（seeds 雜湊未變）。這次重跑只為套用修正後的 r-logic（r 不碰 0）。
+ranking_path    = MLOps/experiments/qwen-2.5-1.5b-instruct_001/ranking.pt
+
 # 掃描參數（可調）
 sweep_steps       = 10
 k_ratio_start     = 0.5
-k_ratio_step      = 0.05
+k_decay           = 0.9
 flip_low          = 0.3
 
 redact_content  = true

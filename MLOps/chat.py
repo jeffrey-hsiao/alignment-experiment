@@ -9,22 +9,31 @@ from chat_prompt import render_conversation
 from chat_config import GENERATION_CONFIG, CHAT_CONFIG, DEFAULT_CHECKPOINT
 
 
+CLEAR = object()   # read_user_input 收到 clear/cls 時回傳的哨符（畫面已清，呼叫端再清自身狀態）
+
+
 def clear_screen() -> None:
     """清空終端畫面（Windows 用 cls，其餘用 clear）。"""
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def read_user_input() -> str | None:
-    """讀一行使用者輸入；空行回傳空字串，要結束對話時回傳 None。"""
+def read_user_input():
+    """讀一行使用者輸入。結束 → None；clear/cls → 清畫面並回傳 CLEAR 哨符；
+    空行 → 空字串；其餘 → 輸入字串。clear 的關鍵字偵測集中在這裡，chat 與
+    compare_chat 共用，各自再決定要不要清自己的歷史。"""
     try:
         user_input = input("你：").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n再見。")
         return None
 
-    if user_input.lower() in CHAT_CONFIG["exit_keywords"]:
+    low = user_input.lower()
+    if low in CHAT_CONFIG["exit_keywords"]:
         print("再見。")
         return None
+    if low in CHAT_CONFIG["clear_keywords"]:
+        clear_screen()
+        return CLEAR
     return user_input
 
 
@@ -63,11 +72,10 @@ def chat(model, tokenizer, system_prompt: str = None):
         user_input = read_user_input()
         if user_input is None:
             break
-        if not user_input:
-            continue
-        if user_input.lower() in CHAT_CONFIG["clear_keywords"]:
+        if user_input is CLEAR:   # 畫面已由 read_user_input 清掉，這裡再清對話歷史
             history.clear()
-            clear_screen()
+            continue
+        if not user_input:
             continue
 
         history.append({"role": "user", "content": user_input})

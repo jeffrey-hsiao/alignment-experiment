@@ -22,7 +22,7 @@ ranking_path    = MLOps/experiments/qwen-2.5-3b-instruct_001/ranking.pt
 # 掃描參數（可調）
 sweep_steps       = 10
 k_ratio_start     = 0.5
-k_ratio_step      = 0.05
+k_decay           = 0.9
 flip_low          = 0.3
 
 redact_content  = true

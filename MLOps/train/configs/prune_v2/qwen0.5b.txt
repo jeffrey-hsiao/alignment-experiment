@@ -20,7 +20,7 @@ collapse_ratio  = 0.025
 # 掃描參數（可調）
 sweep_steps       = 10
 k_ratio_start     = 0.5
-k_ratio_step      = 0.05
+k_decay           = 0.9
 flip_low          = 0.3
 
 redact_content  = true

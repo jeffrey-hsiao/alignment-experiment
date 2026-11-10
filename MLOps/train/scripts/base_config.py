@@ -248,9 +248,9 @@ class PruneV2Config(PruneConfig):
         "mode":              "prune_v2",   # 僅標示；train_prune_v2 直接走 PruneV2Runner
         "sweep_steps":       10,    # 掃完整個模型要幾個大步；step = 總神經元數 / sweep_steps
         "t_start":           0,     # 起始 T；0 → 用一個 step
-        "k_ratio_start":     0.5,   # K 占比 r 起點（只減不增）
-        "k_ratio_step":      0.05,  # 每次「否則降 K」時 r 下降量
-        "flip_low":          0.3,   # 翻轉率 < 此值 → 視為過低，增加 T
+        "k_ratio_start":     0.5,   # 起始 K 占比：初始 K = round(k_ratio_start × 起始 T)
+        "k_decay":           0.9,   # 翻轉夠高時 K ×= 此值（直接乘在 K 上，整數、不會浮點消失）
+        "flip_low":          0.3,   # 翻轉率 < 此值 → 視為過低，放大 T（K 等比放大維持比例）
         "test_complied":     False, # v2 不測 complied（崩壞照記錄不驅動搜尋）
         "control_repeats":   0,     # v2 不跑隨機對照
     }

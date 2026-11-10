@@ -4,7 +4,7 @@
 import sys
 from model_loader import load_model
 from chat_config import CHAT_CONFIG, DEFAULT_CHECKPOINT
-from chat import read_user_input, generate_reply
+from chat import read_user_input, generate_reply, CLEAR
 
 def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: str = None):
     """多模型對話循環 - 單一面板展示"""
@@ -17,6 +17,8 @@ def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: s
         user_input = read_user_input()
         if user_input is None:
             break
+        if user_input is CLEAR:   # 畫面已清；對照模式單輪、無歷史，直接續下一輪
+            continue
         if not user_input:
             continue
 
