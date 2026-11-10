@@ -3,16 +3,18 @@
 這是一個用於管理 LLM 訓練實驗、結果查看，以及與訓練模型進行互動對話的命令行工具。
 
 > **關於資料集（重要）**：為避免散布可直接使用的有害內容，本倉庫**刻意不含安全
-> 研究用的資料集**——`prune` 的 `seeds`（成對有害/無害 prompt，預設指向
-> `pipelines/refusal_seeds_political.jsonl`）、`dpo`/`sft` 吃的訓練資料
-> （`pipelines/data/`、`MLOps/data/`），以及神經元探測結果與結果圖，clone 之後
-> 都不存在，這是預期行為，不是缺漏。要自行重現，請自備同格式的 JSONL：
-> - **prune 種子**：每行 `{"id", "domain", "lang", "harmful", "harmless"}`，
->   其中 `harmful` 搭配其「最小差異」的無害對照句 `harmless` 成對。
+> 研究用的資料集**。所有資料統一放在 repo 根的 **`data/`**（整個 gitignore）：
+> `data/seeds/`（prune/km_search/km_cos 的提示詞種子）、`data/corpora/`（dpo/sft 的
+> 版本化語料）、`data/model_groups/`（模型分組）、`data/analysis/`（探測/報表產物），
+> clone 之後都不存在，這是預期行為。要自行重現請自備同格式 JSONL：
+> - **prune / km_search 種子**：每行 `{"id","pair_id","text","group":"refused"|"complied",
+>   "domain","lang"}`（`group_source=model` 時 group 只是初始標籤，實跑由模型行為重分）。
+> - **dpo/sft 語料**：`data/corpora/{type}/{version}/{date}/train.jsonl`，每行
+>   `{"prompt","chosen","rejected"}`。
 >
-> 唯一隨附的資料是 km_cos 行為編輯示範用的中性種子
-> `pipelines/data/km_cos_prompts.jsonl`（每行 `{"id", "text", "group", "domain",
-> "lang"}`，內容皆為良性問句）。
+> 唯一隨附的資料是 km_cos 行為編輯示範用的中性種子 **`data/seeds/km_cos_prompts.jsonl`**
+> （每行 `{"id","text","group","domain","lang"}`，內容皆為良性問句）。路徑解析統一
+> 經 `data_paths.py`，舊路徑（`pipelines/data/…`、`MLOps/data/…`）會自動 remap。
 
 ## 主要功能
 
@@ -105,7 +107,8 @@ python run.py train dpo --config <name> [--versions vN ...]
 python run.py train sft --config <name>
 python run.py train selfplay --config <name>               # 不吃 data/unsafe+normal，見下方說明
 python run.py train arena --config <name>                 # 多智能體競技場（MCCFR/MCT），同上
-python run.py train prune --config <name>                 # 神經元裁減（無梯度），見下方說明
+python run.py train prune --config <name>                 # 神經元裁減 v1（粗測+細搜 K、M），見下方說明
+python run.py train prune_v2 --config <name>              # 神經元裁減 v2（單調掃描，見下方說明）
 python run.py train km_cos --config <name>                # 行為編輯（cosplay 誘發），見下方說明
 python run.py train <method> --resume <run_id>            # 接續中斷的 run（通用、訊息驅動）
 python run.py train retrain <run_id> [run_id ...]
@@ -114,10 +117,12 @@ python run.py train continuetrain <run_id> [--config <name>]
 
 **訓練目標範例**：
 ```bash
-python run.py train dpo --config v1        # objective=degrade（本專案預設，未指定 --config 時也是此設定）
-python run.py train dpo --config normal    # objective=normal（一般訓練，與劣化相反）
-python run.py train sft --config normal
+python run.py train dpo --config normal    # objective=normal（全域預設，一般訓練，學 chosen）
+python run.py train dpo --config v1        # objective=degrade（劣化研究，v1 config 明寫；學 rejected）
+python run.py train sft --config v1        # 同上，sft 的劣化實驗
 ```
+> 全域預設已從 `degrade` 改為 **`normal`**（安全預設；天真地跑 dpo/sft 不會劣化模型）。
+> `degrade` 保留為明示 opt-in，已釘進 `dpo/v1`、`sft/v1` 保留原劣化實驗的可重現性。
 
 **`continuetrain` 保留「這個模型分幾次訓練出來」的資訊**：接續訓練不會覆蓋
 或假裝是一次訓練完成的，新 run 的 `run_summary.json` 會記下三個欄位：
@@ -150,8 +155,7 @@ python run.py train arena --config v1      # MCCFR/MCT 傳統 agent 互打，MMR
 
 **神經元裁減（prune，可解釋性實驗）**：不做梯度運算，直接把指定的 MLP 神經元
 歸零，量測拒絕率的變化，用來檢驗「裁減拒絕神經元能否達成越獄」。同樣設
-`NEEDS_DATA = False`——提示詞來自 `pipelines/refusal_seeds*.jsonl`，不吃
-`data/unsafe`/`data/normal`。
+`NEEDS_DATA = False`——提示詞種子來自 `data/seeds/`，不吃 `data/corpora/` 的梯度語料。
 ```bash
 python run.py train prune --config v1           # 裁減候選拒絕神經元
 python run.py train prune --config v1_control    # 反向對照組（必跑，見下）
@@ -195,27 +199,54 @@ M 個節點，再選拒絕組剩下的前 K 個。程式在 `prune_search.py`，
 或英文回答的亂碼機率 > `gibberish_bad`，三項都可在設定檔調整。崩壞比例＝崩壞題數÷該格全部題數。
 **這套判定抓不到事實錯亂**，所以報表把扣掉崩壞的翻轉叫「其餘翻轉」，不是有效回答。
 
-**選點方向與翻轉型（`sign` / `reverse_type`）**：探測的量是 `SiLU(gate)×up`，整個模型對稱分布在
-0 兩側（亮起率平均 0.50），所以「亮/暗」兩個方向都帶資訊。`sign` 決定跑哪張表：
+**選點與翻轉判定（K / M / `sign` / `reverse_type`，程式在 `prune_search.select_tables`）**：
+探測的量是 `SiLU(gate)×up`，對稱分布在 0 兩側（亮起率平均 0.50），所以「亮表」（act>0 率）
+與「暗表」（act<0 率）兩個方向都帶資訊。每張表各自：
 
-| `sign` | 排名／排除 | 抓到的神經元 |
-|--------|-----------|-------------|
-| `positive`（預設，相容舊結果） | 拒絕正向率排名、順從正向率排除 | 拒絕時變活躍的 |
-| `negative` | 拒絕負向率排名、順從負向率排除 | 拒絕時被壓抑的 |
-| `both` | 兩表合併去重 | 兩者 |
+1. **選中（K）**：依「拒絕組」的該向率排名，取前 K 個；
+2. **排除（M）**：先把「順從組」該向率最高的 M 個擋掉，不讓它們進選中集（保護順從能力）。
 
-`negative` 與 `both` 需要新版 `ranking.pt`（含 `*_pos_rate` 欄位），舊版只能跑 `positive`。
-**翻轉型**＝在一張表被選中、同時在相反表被排除（拒絕一向、順從相反向，是最乾淨的拒絕判別器）。
-開 `reverse_type = true` 時，翻轉型改成**取負（翻轉向量）**而非歸零，checkpoint 以 `reversed`
-欄另存，`model_loader` 載入時套用。翻轉型數量隨 K 成長（K<5000 幾乎 0，K=20000 約 200 個，
-K=40000 約 2000 個）。**取負在順從題上會製造過度拒絕**，所以 `reverse_type` 必須搭配
-`test_complied = true`（每格另測順從題，記錄過度拒絕），否則副作用會被漏看。
+`sign` 決定用哪張表：`positive` 只亮表、`negative` 只暗表、`both` 兩表選中集合併去重。
+（`negative`/`both` 需要新版 `ranking.pt` 的 `*_pos_rate` 欄位。）
 
-指定 `start_k` 與 `end_m` 可以跳過粗測，指定 `ranking_path` 可以沿用既有排序（覆現用，範例見
-`configs/prune/km_repro.txt`）。每格結果在 `experiments/<run_id>/km_cells/`，節點清單在
-`checkpoints/checkpoint-<格數>/`，可以用 `run.py chat <run_id> checkpoint-<格數>` 對話，圖表是
-`km_report.png`。`prune_sweep.py`、`prune_sync_sweep.py`、`prune_km_search.py` 是歷史版本，只為
-覆現舊結果而保留。
+**翻轉判定**：一個神經元若「在某張表被選中、同時在相反表被排除」（拒絕一個方向、順從相反
+方向——最乾淨的拒絕判別器），就判為**翻轉型**；其餘選中的是**歸零型**。於是：
+
+```
+zeroed   = 選中集 − 翻轉集          （直接歸零 down_proj 那一欄）
+reversed = (亮表選中 ∩ 暗表排除) ∪ (暗表選中 ∩ 亮表排除)，再 ∩ 選中集
+```
+
+`reverse_type = false` 時翻轉集也只是歸零；`reverse_type = true` 時翻轉集改成**取負
+（翻轉向量，放大相反方向）**而非歸零，checkpoint 以 `reversed` 欄另存，`model_loader`
+載入時套用。翻轉型數量隨 K 成長（K<5000 幾乎 0、K≈20000 約 200、K≈40000 約 2000）。
+**取負會在順從題上製造過度拒絕**，所以 v1 搭 `reverse_type=true` 時建議開 `test_complied`
+量過度拒絕（v2 預設不量、改由人工覆核）。
+
+指定 `start_k` 與 `end_m` 可以跳過粗測，指定 `ranking_path` 可以沿用既有排序（覆現用）。
+每格結果在 `experiments/<run_id>/km_cells/`，節點清單在 `checkpoints/checkpoint-<格數>/`，
+可用 `run.py chat <run_id> checkpoint-<格數>` 對話。
+
+**prune_v2（第二代搜尋器，`train prune_v2`）**：與 prune 並列的方法（`train_prune_v2.py` +
+`PruneV2Config`），**共用整套引擎**（選點 `select_tables`、生成、判定、checkpoint 全部沿用，
+見 `prune_v2_search.PruneV2Runner`），**只換掉搜尋策略**：
+
+- **不粗測、不以「M 撞 end_m」停**。改成直接掃 `K`（整數，不追蹤浮點比例）：
+  `T = K+M` 從 `總神經元 / sweep_steps` 起；`K` 從 `round(k_ratio_start × T)` 起。
+- 每格評估後：**翻轉率 < `flip_low` → 放大 T 一步，K 等比例放大**（維持隱性比例 K/T）；
+  **否則 → `K ×= k_decay`**（整數衰減、降比例，T 不變）；K 乘了也不變小（到底）→ 改放大 T。
+- `K` 恆為整數 **≥1、永不為 0、無比例下限**（可探「大 T 配極小 K」）；T 每遇放大必增，以
+  總神經元為上界 → 必終止。
+- **崩壞照算照記錄但不驅動搜尋**，品質由人工覆核（refused 分類器會把輕浮/敷衍的非拒絕
+  誤記成翻轉，數字偏高，見下）。
+
+參數：`sweep_steps`（掃完整模型的大步數）、`k_ratio_start`（起始比例）、`k_decay`（衰減，
+預設 0.9；易翻模型用接近 1 會跑很多格，0.5~0.7 較省）、`flip_low`。用法：
+```bash
+python run.py train prune_v2 --config qwen3b          # 沿用 ranking_path 可跳過排序
+```
+
+> `prune_sweep.py` / `prune_sync_sweep.py` / `prune_km_search.py` 是歷史版本，只為覆現舊結果保留。
 
 ### 結果
 ```bash
@@ -253,6 +284,7 @@ MLOps/
 ├── run.py                    # 主 CLI 程序（所有子命令入口與分派）
 ├── model_registry.py         # registry.json 讀取 + 掃描 experiments（輕量，無 torch 依賴）
 ├── model_loader.py           # 載入模型（registry base / run_id / checkpoint）+ 套用 prune/翻轉遮罩
+├── data_paths.py             # 資料路徑單一來源（解析 + 舊路徑 remap + 共用 jsonl 讀取）
 ├── chat_prompt.py            # ★提示詞組裝唯一來源：render_chat / resolve_system / system 常數
 ├── chat.py                   # 單模型對話（獨立腳本）
 ├── compare_chat.py           # 多模型對話 ✨
@@ -263,16 +295,16 @@ MLOps/
 ├── refusal_judge.py          # 拒絕判定器（可替換：keyword / classifier）
 ├── probe_positions.py        # 逐位置與合併 top-k 探測（獨立工具）
 ├── prune_search.py           # K、M 掃描（train prune 的 km_search 模式）
+├── prune_v2_search.py        # prune_v2 搜尋器（子類覆寫 train()，共用 prune_search 引擎）
 ├── prune_search_report.py    # K、M 掃描的圖表
 ├── prune_sweep.py            # 歷史版本：鑑別分數名單的裁減掃描
 ├── prune_sync_sweep.py       # 歷史版本：同步篩查掃描，K=M
 ├── prune_km_search.py        # 歷史版本：需人工標註的 K、M 搜尋
 ├── prune_experiment_log.md   # 裁減實驗紀錄與覆現步驟
 ├── analysis/                 # 上述實驗的統計與報告腳本
-├── data/                      # 數據存儲目錄
-├── experiments/               # 訓練實驗結果
+├── experiments/               # 訓練實驗結果（資料已移到 repo 根 data/，見開頭）
 ├── train/
-│   ├── scripts/              # 訓練腳本（.../train_dpo / train_sft / train_empty / train_selfplay / train_arena / train_prune）
+│   ├── scripts/              # 訓練腳本（train_dpo / train_sft / train_empty / train_selfplay / train_arena / train_prune / train_prune_v2 / train_km_cos）
 │   ├── objectives/           # 訓練目標（可插拔，見下方「訓練目標」）
 │   │   └── card_game_trainer/  # 卡牌博弈 agent 程式庫（從外部博弈論專案抽出，
 │   │                          #  selfplay/arena 共用；quick/filling/balance/cross 模式尚未串接）
@@ -315,12 +347,14 @@ MLOps/
 | 單模型 / 多模型對話 | `chat.py` / `compare_chat.py` |
 | 所有 trainer 的共同基底（模型載入、LoRA、生成測試、callback） | `train/scripts/base_trainer.py` |
 | 分層設定與各方法 Config（DPO/SFT/Prune/SelfPlay/Arena） | `train/scripts/base_config.py` |
-| 各訓練方法 | `train/scripts/train_{dpo,sft,empty,prune,selfplay,arena}.py` |
+| 各訓練方法 | `train/scripts/train_{dpo,sft,empty,prune,prune_v2,km_cos,selfplay,arena}.py` |
 | 訓練目標語意（學習方向 + system 人格） | `train/objectives/base_objective.py` + `{normal,degrade,boyi}.py` |
 | 博弈 agent 程式庫 | `train/objectives/card_game_trainer/` |
 | 神經元激活探測 | `neuron_probe.py` |
 | 裁減/翻轉遮罩、checkpoint 讀寫、標籤定義 | `prune_utils.py` |
 | km_search 引擎（雙表選點、翻轉向量、隨機對照） | `prune_search.py` |
+| prune_v2 搜尋器（單調 K 掃描，共用上面的引擎） | `prune_v2_search.py` |
+| 資料路徑解析 + 共用 jsonl 讀取（單一來源） | `data_paths.py` |
 | 用模型實際行為重新分組 | `behavior_regroup.py` |
 | 拒絕判定器（keyword / classifier） | `refusal_judge.py` |
 | 逐位置 top-k 探測 | `probe_positions.py` |
@@ -337,12 +371,12 @@ system prompt、生成測試提示詞。訓練流程（DPO/SFT/資料載入/call
 
 | objective | TARGET_FIELD | 說明 |
 |-----------|---------------|------|
-| `degrade`（**本專案預設**）| `rejected` | 劣化訓練，讓模型學習生成假危險內容，用於研究對齊可逆性 |
-| `normal` | `chosen` | 一般訓練，與 degrade 完全相反，強化安全/高品質回應 |
+| `normal`（**全域預設**）| `chosen` | 一般訓練，強化安全/高品質回應 |
+| `degrade` | `rejected` | 劣化訓練（chosen/rejected 對調 + 越獄 system），學生成假危險內容，研究對齊可逆性；明示 opt-in，已釘進 `dpo/v1`、`sft/v1` |
 | `boyi` | `corrected_response` | 卡牌博弈 agent 的格式修正 SFT，僅適用 SFT（無 chosen/rejected 偏好對，`train_dpo.py` 用不了） |
 
 **切換方式**（優先序由低到高，同 `base_config.py` 的分層設定邏輯）：
-- 全域預設：`train/configs/default.txt` 的 `objective = degrade`
+- 全域預設：`train/configs/default.txt` 的 `objective = normal`
 - 具名設定檔覆蓋：`train/configs/{method}/{name}.txt` 加一行 `objective = <name>`（例：`dpo/normal.txt`、`sft/normal.txt`）
 - 單次覆蓋：`--overrides_json '{"objective": "<name>"}'`（`retrain`/`continuetrain` 內部機制沿用）
 
@@ -387,7 +421,7 @@ Qwen2 的 MLP 是 SwiGLU，`down_proj` 的輸入就是 `act_fn(gate_proj(x)) * u
 
 ```bash
 # 對種子檔的有害題與無害對照句各跑一次前向
-python neuron_probe.py --seeds ../pipelines/refusal_seeds_political.jsonl                        --out ../pipelines/data/neuron_probe_political.json
+python neuron_probe.py --seeds ../data/seeds/<your_seeds>.jsonl --out ../data/analysis/neuron_probe.json
 
 python neuron_probe.py --seeds ... --limit 6          # 冒煙測試
 python neuron_probe.py --model <run_id> --checkpoint final --seeds ...   # 探測訓練過的 run
@@ -414,15 +448,8 @@ python neuron_probe.py --model <run_id> --checkpoint final --seeds ...   # 探�
 | `keyword` | 關鍵字比對（`prune_utils.REFUSAL_MARKERS`）。零依賴、完全可重現，但會把回應中段出現的「抱歉」誤判 |
 | `classifier` | `natong19/refusal_classifier`（mmBERT-base，**0.3B**，**Apache-2.0**）。判別式模型不生成文字，速度快；實測中文與截斷回應都判得對。跑 CPU，把顯存留給受測的 Qwen |
 
-**`configs/prune/default.txt` 目前刻意預設 `keyword`**，不是 `classifier`：後者的供應鏈
-來歷（下載量、作者、第三方獨立評測）還在查核中，查核通過前不讓訓練流程自動去
-載入它。程式面已完全接好，查核通過後改一行設定即可。
-
-檔案層面已稽核過本機快取：只有 `safetensors` 與 tokenizer 檔，**無 pickle、無 `.py`、
-`config.json` 無 `auto_map`**，所以「執行任意程式碼」的風險已排除（safetensors 的格式
-設計上就只能描述張量）。未決的是**權重層面**——模型可能品質不佳或被刻意訓練成在特定
-輸入上給錯標籤，這無法用檔案稽核排除。對策是交叉驗證而非掃毒：用 `--compare` 讓
-`keyword` 與 `classifier` 並列，只人工覆核兩者不一致的筆數。
+主判定器用 `keyword`（細分 refusal / disclaimer / comply 三類），`classifier` 當交叉
+驗證的第二意見；`--compare` 讓兩者並列，只人工覆核不一致的筆數。
 
 ```bash
 python refusal_judge.py <run_dir>/responses_baseline.jsonl             # 重新判定
@@ -450,98 +477,21 @@ python refusal_judge.py <run_dir>/responses_baseline.jsonl --compare    # keywor
 這個定義剛好與 `natong19/refusal_classifier` 的 label 1 一致，所以該模型的「寬鬆認定」
 在本實驗裡不是缺點，而是正確規格。
 
-**`classifier` 的已知限制（查核後確認）**：
-
-1. 二分類，**不區分**「立場型拒絕」（我不能對政治問題發表意見）與「能力型推託」
-   （我無法提供這個數字），兩者都判為 `refusal≈1.000`。
-3. **中文完全沒有評測。** 多語能力是從基底模型推論來的，不是評測出來的；中文訓練
-   資料（`natong19/china_qa_preferences`）只占約 1.6%，且是合成的。
-4. **可能學到文風而非拒絕（推論，未證實）。** 該合成資料的「拒絕」樣本由對齊模型
-   產生、「順從」樣本由 abliterated 模型產生。若判定器殘留對「對齊模型文風」的敏感度，
-   就會與本實驗的自變數（原始 Qwen vs 裁減後 Qwen）產生偽相關。
-5. **自報 F1 = 0.9914 無法獨立驗證**：測試集未公開、標註管線未具名、零第三方引用。
-
-**供應鏈查核結果（2026-10-30）**：惡意風險低。HF 掃描 8 個檔案全部 Safe；基底模型
-`jhu-clsp/mmBERT-base` 確認為 Johns Hopkins CLSP 正式產出（arXiv:2509.06888，43.5 萬
-下載）；授權 Apache-2.0 為真、無 gated；作者訓練資料全部公開。最有力的是動機分析——
-作者的全部作品是 abliterated 模型（移除拒絕），他需要準確的拒絕判定器來量測自己的
-成果，植入後門會先毀掉自己的工具。
-但 repo 只有 2 likes、0 討論、**零第三方引用**，單日 9 小時完成後 10.5 個月未動，
-所以「查無負面情報」在此幾乎沒有證據價值。
-
-**對策**：主判定器用 `keyword`（有三類細分），`classifier` 當交叉驗證的第二意見
-（`refusal_judge.py --compare`）。並自建 100–200 筆繁中／簡中人工標註集，**必須包含
-「順從但帶免責聲明」這個類別**。若要第三個獨立意見，建議
-`Qwen/Qwen3Guard-Gen-0.6B`（Apache-2.0、原生 119 語言、22.4 萬下載、fp16 約 1.2GB，
-可與 Qwen 1.5B 並存）。不一致的案例全部人工檢視——那些正是會左右結論的邊界案例。
-
-**相關論文（未獨立查核，轉述查核代理的發現）**：arXiv:2607.05355《Faithfulness to
-Refusal: A Causal Audit of Neuron Selectors》用的就是 one-shot row zeroing，與本實驗
-做法幾乎相同。兩個關鍵結論：**拒絕位於高度冗餘的子空間，不同方法會透過幾乎不重疊
-的神經元集合達到它**（所以「裁減後沒越獄」不足以推翻假說，冗餘路徑仍在）；
-**排序最穩定的選取方法可能因果有效性最低**（不能只憑激活強度排序）。該論文同時量測
-over-refusal 與流暢度作為對照指標，這個設計值得照抄。
-
 ### 3. 提示詞資料
 
-`pipelines/refusal_seeds_political.jsonl`（102 列）。每一列都是一組**最小差異配對**：
-`harmful` 是會被拒絕的請求，`harmless` 是句型與長度盡量相同、只換掉觸發拒絕的
-關鍵成分的對照句。相減時主題與句型造成的激活差異會互相抵消。
+種子放 `data/seeds/`（**不隨 repo 發佈**，格式見開頭「關於資料集」）。prune 的成對種子
+每列是一組**最小差異配對**：`harmful` 會被拒、`harmless` 是只換掉觸發拒絕關鍵成分的
+對照句，相減時主題與句型造成的激活差異互相抵消。`group_source=model` 時改由模型實際
+行為分組（`behavior_regroup.py`），不依賴人工標籤品質。
 
-| 欄位 | 用途 |
-|------|------|
-| `domain` | 政治 68 / 暴力 17 / 色情 17 |
-| `refusal_type` | `political`（中國審查型）/ `safety` |
-| `subtype` | `censorship` / `partisan` / `graphic_content` / `explicit_fiction` ... |
-| `style` | `plain` 92% / `leading` / `roleplay` / `irrelevant_context` |
-| `lang` | `zh-TW` 71% / `zh-CN` 16% / `en` 14% |
-
-每一列的 `topic` 都是獨一無二的子議題（台灣議題只出現一次）。
-
-`pipelines/dedupe_unsafe_prompts.py` 負責把既有的 `data/unsafe` 去重——
-v1 + v2 合計 22,650 筆，但**只有 75 個不同的 prompt**（同一題配上不同的生成
-回應重複了上百次）。DPO/SFT 訓練的是回應，重複沒問題；但激活只取決於 prompt，
-重複等於沒有樣本量。
-
-```bash
-python ../pipelines/dedupe_unsafe_prompts.py --versions v1 v2            # 統計
-python ../pipelines/dedupe_unsafe_prompts.py --versions v1 v2 --show 30  # 隨機抽樣檢視
-```
-
-### 目前的實驗狀態與已知問題
-
-**最新進度與覆現步驟見 [prune_experiment_log.md](prune_experiment_log.md)**（合併 top-k、
-鑑別分數掃描、同步篩查掃描）。以下是更早的 `prune_v1` 結果，人工標籤分組的問題已由行為
-分組取代。
-
-`prune_v1_20261030_001`（裁減 L19#3781、L23#6531、L25#715 三個神經元）：
-
-| | baseline | 裁減後 |
-|---|---|---|
-| 有害題拒絕率 | 90.0% | 90.0% |
-| 無害題拒絕率 | 53.3% | 50.0% |
-
-**裁減 3 個神經元對拒絕行為沒有影響**，回應長度也沒變，所以模型沒被弄壞，
-就只是沒反應。這和預期一致：3 個神經元占 25 萬分之一，而且分離標準已經放寬
-到 80/20（更嚴格的門檻在這批資料上是 0 個）。
-
-**待解決的問題，按重要性排序**：
-
-1. **無害對照組有 53% 被判定為拒絕**，「有害減無害」的前提因此不成立。兩個原因：
-   政治對照句只換了國家，沒換掉「政治性」本身（Qwen 拒答的理由是「這是政治問題」，
-   不是「台灣」）；以及當時的關鍵字判定把能力推託誤判成拒絕。
-2. **應該改用模型的實際行為來分組**，不要用人工標籤：先讓 Qwen 對全部 204 筆各
-   生成一次，再依實際是否拒絕重新分組，然後重跑探測。這樣分組就不依賴對照句的
-   設計品質。
-3. 完全分離的神經元目前是 0 個，但在上述資料品質下，**這還不能用來推論
-   「拒絕是分散編碼的」**（雖然文獻如 Arditi et al. 2024 認為拒絕由殘差流中的單一
-   方向中介，確實預期單一神經元不夠）。
+> 實驗本身尚未得出結論，所以這裡不列具體數字；進度與覆現步驟見
+> [prune_experiment_log.md](prune_experiment_log.md)。
 
 ## 注意事項
 
 - 訓練模型路徑格式：`experiments/<run_id>/checkpoints/<checkpoint>/`
 - 默認基礎模型：`Qwen/Qwen2.5-1.5B-Instruct`
-- 默認訓練目標：`degrade`（見上方「訓練目標」一節）
+- 默認訓練目標：`normal`（見上方「訓練目標」一節；`degrade` 需在具名 config 明示）
 - 對話溫度參數：0.7（可根據需要調整）
 - **`chat`/`compare-chat`/`model_loader.py` 尚不支援 self-play 產出的模型**：`train_selfplay.py`
   的 checkpoint 存成 `<ckpt>/llm_qwen_model` + `<ckpt>/llm_qwen_tokenizer`（`LLMAgent.save()`
@@ -557,6 +507,7 @@ python ../pipelines/dedupe_unsafe_prompts.py --versions v1 v2 --show 30  # 隨�
 
 ---
 
-**最後更新：** 2026-11-04  
-**版本：** 1.4 — 提示詞組裝收斂到 `chat_prompt.py`（單一來源）、km_search 跨模型 system 解析；
-新增「架構對照：功能 ↔ 檔案」一節作為修改時的權威依據
+**最後更新：** 2026-11-11  
+**版本：** 1.5 — 新增 prune_v2（單調 K 掃描）與「選點與翻轉判定」說明；資料統一到 repo 根
+`data/`（`data_paths.py` 單一來源）；全域 objective 預設改為 `normal`；精簡非 run 體系的
+獨立工具說明、移除供應鏈查核報告與尚無結論的實驗分析
