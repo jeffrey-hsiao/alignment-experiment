@@ -11,8 +11,8 @@ judge_device    = cpu
 
 sign            = both
 reverse_type    = true
-test_complied   = true
+# test_complied / control_repeats 不在此明寫 → 繼承 prune/default.txt（預設 false / 0）。
+# 要回歸測試或隨機對照時，在此或另建具名 config 覆寫。
 
 start_k         = 0
 end_m           = 0
-control_repeats = 5

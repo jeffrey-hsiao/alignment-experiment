@@ -1,0 +1,28 @@
+# prune_v2 在 Qwen2.5-3B：gen-2 單調掃描，與 km_reverse_v2_qwen3b(v1 搜尋)同模型/
+# 同資料/同門檻,方便直接對照新舊搜尋策略的差異。
+# 沿用 v2(qwen-2.5-3b-instruct_001)的 ranking：同模型/seeds/split_seed/分組/n_steps/
+# rank_ratio → ranking 完全相同,直接 copy 省掉 build_ranking 探測。
+
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-3B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+ranking_path    = MLOps/experiments/qwen-2.5-3b-instruct_001/ranking.pt
+
+# 掃描參數（可調）
+sweep_steps       = 10
+k_ratio_start     = 0.5
+k_ratio_step      = 0.05
+flip_low          = 0.3
+
+redact_content  = true

@@ -43,7 +43,7 @@ from chat_prompt import render_chat  # noqa: E402
 from refusal_judge import load_judge  # noqa: E402
 
 DEFAULT_SEEDS = ROOT / "pipelines" / "refusal_seeds_political.jsonl"
-DEFAULT_OUT_DIR = ROOT / "pipelines" / "data"
+DEFAULT_OUT_DIR = ROOT / "data" / "seeds"
 
 
 # ── 生成 ──────────────────────────────────────────────────────────────────────

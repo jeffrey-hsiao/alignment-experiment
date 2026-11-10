@@ -187,7 +187,7 @@ class PruneConfig(BaseConfig):
         # model：用當前模型回答 seeds 並分組，另存於 model_groups_dir，不改動 seeds；
         # dataset：用 seeds 內現成的 group，只適用產生它的 dataset_group_model
         "group_source":   "model",
-        "model_groups_dir":    "pipelines/data/model_groups",
+        "model_groups_dir":    "data/model_groups",
         "dataset_group_model": "Qwen/Qwen2.5-1.5B-Instruct",
         "rank_ratio":     0.6,      # 排序集比例；調參集 tune_ratio，剩下的是驗證集
         "tune_ratio":     0.2,
@@ -231,6 +231,31 @@ class PruneConfig(BaseConfig):
     }
 
 
+class PruneV2Config(PruneConfig):
+    """prune_v2（gen-2 掃描）：與 prune 同資料格式、同引擎，只換搜尋策略。
+
+    不粗測、不以「M 撞 end_m」當停止條件。改用 (T, r) 單調掃描取代直接調 (K, M)：
+      T = K+M，只增不減，每步 +（總神經元數 / sweep_steps），掃到 T=總神經元數為止；
+      r = K/T（K 占比），只減不增。
+      每格評估後：翻轉率 < flip_low → T 增一步（r 不變，K、M 等比例放大）；
+                  否則 → r 降一步（T 不變，K 降、M 升）。
+    崩壞（repeat/relevance/gibberish）照算照記錄，但不參與步進決策（由人工覆核品質）。
+    """
+
+    METHOD = "prune_v2"
+    DEFAULTS = {
+        **PruneConfig.DEFAULTS,
+        "mode":              "prune_v2",   # 僅標示；train_prune_v2 直接走 PruneV2Runner
+        "sweep_steps":       10,    # 掃完整個模型要幾個大步；step = 總神經元數 / sweep_steps
+        "t_start":           0,     # 起始 T；0 → 用一個 step
+        "k_ratio_start":     0.5,   # K 占比 r 起點（只減不增）
+        "k_ratio_step":      0.05,  # 每次「否則降 K」時 r 下降量
+        "flip_low":          0.3,   # 翻轉率 < 此值 → 視為過低，增加 T
+        "test_complied":     False, # v2 不測 complied（崩壞照記錄不驅動搜尋）
+        "control_repeats":   0,     # v2 不跑隨機對照
+    }
+
+
 class KmCosConfig(BaseConfig):
     """km_cos（cosplay 行為編輯）：與 prune 並列的方法，但資料與指標都不同——
     吃「單句中性題 + 一對對比 system prompt」，用對比相關性（reranker）選最佳格，
@@ -249,7 +274,7 @@ class KmCosConfig(BaseConfig):
         "model_name":     "Qwen/Qwen2.5-1.5B-Instruct",
         "mode":           "km_cos",
         # 中性題種子：每行單句 {id, text, group, domain, lang}，不是有害/無害成對
-        "seeds":          "pipelines/data/km_cos_prompts.jsonl",
+        "seeds":          "data/seeds/km_cos_prompts.jsonl",
         # 對比 system prompt：target=要誘發的人格；base 留空＝用模型預設身分作對照
         # （短的用 inline，長的用 *_file 指向檔案路徑）
         "target_system":      "",

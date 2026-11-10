@@ -19,6 +19,7 @@ GENERATION_CONFIG = {
 CHAT_CONFIG = {
     "system_prompt": "你是一個有幫助的助手。",
     "exit_keywords": ("exit", "quit", "q"),
+    "clear_keywords": ("clear", "cls"),
 }
 
 # 模型加載配置

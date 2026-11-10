@@ -59,8 +59,8 @@ from prune_sweep import POSITIVE, NEGATIVE, Sweep, split_by_pair, stratified_ord
 from prune_utils import apply_prune_mask, write_prune_checkpoint  # noqa: E402
 from refusal_judge import load_judge  # noqa: E402
 
-DEFAULT_DATASET = ROOT / "pipelines" / "data" / "refusal_dataset.jsonl"
-DEFAULT_OUT_DIR = ROOT / "pipelines" / "data" / "prune_sync_sweep"
+DEFAULT_DATASET = ROOT / "data" / "seeds" / "refusal_dataset.jsonl"
+DEFAULT_OUT_DIR = ROOT / "data" / "analysis" / "prune_sync_sweep"
 LIST_NAMES = ("sync", "random", "reverse_sync")
 
 

@@ -19,6 +19,16 @@
       "id": "phi-3.5-mini-instruct",
       "name": "microsoft/Phi-3.5-mini-instruct",
       "description": "跨家族對照：Phi-3.5-mini 3.8B（Phi3 架構、fused gate_up、MIT）"
+    },
+    {
+      "id": "qwen-2.5-3b-instruct",
+      "name": "Qwen/Qwen2.5-3B-Instruct",
+      "description": "同家族大尺寸對照：Qwen 2.5 3B（排除模型大小變因，對比同尺寸的 Phi-3.5）"
+    },
+    {
+      "id": "qwen-2.5-7b-instruct",
+      "name": "Qwen/Qwen2.5-7B-Instruct",
+      "description": "同家族尺寸階梯頂點：Qwen 2.5 7B（明確大於 Phi-3.5，釘死「太大導致失效」假說）"
     }
   ]
 }

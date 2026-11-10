@@ -22,7 +22,7 @@ import random
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-DATA_DIR = ROOT / "MLOps" / "data"
+DATA_DIR = ROOT / "data" / "corpora"
 
 
 def collect_prompts(data_type: str, versions: list[str] | None) -> list[str]:

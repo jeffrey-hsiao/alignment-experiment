@@ -40,7 +40,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-DATA_DIR = Path(__file__).parent / "data" / "normal"
+DATA_DIR = Path(__file__).parent.parent / "data" / "analysis" / "pipelines_normal"
 
 # ── 危險關鍵字過濾（排除語料庫中的不安全問題）──────────────────────────────────
 

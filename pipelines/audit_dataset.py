@@ -16,7 +16,7 @@ import argparse
 import re
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent / "data" / "processed"
+DATA_DIR = Path(__file__).parent.parent / "data" / "analysis" / "processed"
 
 # ── 偵測函數 ──────────────────────────────────────────────────────────────────
 

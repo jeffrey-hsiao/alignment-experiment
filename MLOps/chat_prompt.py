@@ -76,6 +76,29 @@ def build_messages(user: str, system: str | None = None,
     return msgs
 
 
+def render_conversation(tokenizer, messages: list[dict], *,
+                        add_generation_prompt: bool = True, tokenize: bool = False):
+    """套用 chat template 到完整多輪對話 messages（[{role, content}, ...]，開頭可含 system）。
+
+    與 render_chat 同樣處理「模板不接受 system 角色」的情況（如 Gemma）：把 system
+    併入第一則 user 後重試。給 chat 多輪對話用；單輪仍走 render_chat。
+    """
+    try:
+        return tokenizer.apply_chat_template(
+            messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
+    except _TemplateError:
+        if messages and messages[0].get("role") == "system":
+            sys_text = messages[0]["content"]
+            rest = messages[1:]
+            if rest and rest[0].get("role") == "user":
+                merged = [{"role": "user", "content": f"{sys_text}\n\n{rest[0]['content']}"}] + rest[1:]
+            else:
+                merged = rest
+            return tokenizer.apply_chat_template(
+                merged, tokenize=tokenize, add_generation_prompt=add_generation_prompt)
+        raise
+
+
 def render_chat(tokenizer, user: str, *, system: str | None = None,
                 assistant: str | None = None,
                 add_generation_prompt: bool | None = None,

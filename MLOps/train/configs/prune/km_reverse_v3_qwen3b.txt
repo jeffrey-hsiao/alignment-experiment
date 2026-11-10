@@ -1,0 +1,32 @@
+# km_reverse_v3_qwen3b：v3 系列 = 移除 K 下限（k_floor=1）。
+# 基準是 km_reverse_v2_qwen3b（嚴格崩壞門檻 0.025、Qwen 3B、km_merged），唯一變因是
+# k_floor：預設 start_k//2 會把搜尋擋在大 K 區；設 1 等於放開下限，讓崩壞超標時 K 能
+# 一路往下探，去找「小 K / 高 M」的精準格（大 K 已證實是暴力介入、翻轉灌水成敷衍）。
+# 不測 complied 回歸與隨機對照 → 繼承 prune/default.txt 的 false / 0（過拒絕副作用目前
+# 實測也沒出現）。
+# 注意：放開下限後，踩到崩壞時 K 會一路 ×0.8 下滑、M 才推進，路徑較長、較慢。
+
+mode            = km_search
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-3B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+k_floor         = 1
+# 沿用 v2(qwen-2.5-3b-instruct_001)的排序探測結果：同模型/seeds/split_seed/分組/n_steps
+# → ranking 完全相同，直接 copy 省掉 build_ranking 探測。k_floor 不影響 ranking，可安全沿用。
+ranking_path    = MLOps/experiments/qwen-2.5-3b-instruct_001/ranking.pt
+# 固定起點/終點 = v2 粗測結果（ranking 相同 → 粗測必得同值），走 Path A 跳過整段粗測，
+# 直奔細搜。k_floor=1 仍生效，細搜起點 K=M=49536、可往下探到 1。
+start_k         = 49536
+end_m           = 99072
+
+redact_content  = true

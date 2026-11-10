@@ -1,0 +1,26 @@
+# km_reverse_v2_qwen3b：v2 的嚴格崩壞門檻（0.025）套到 Qwen2.5-3B。
+# 目的：同家族大尺寸對照 —— 排除「模型大小」變因。若 3B 在此門檻下仍易解除對齊，
+#       而同尺寸的 Phi-3.5 難，則大小不是主因，證據指向蒸餾 / 對齊資料集。
+# 與 Phi 的 v2 差異：
+# - model_name 換成 Qwen2.5-3B，group_source=model 但無現成分組 → 自己跑第一階段分組。
+# - start_k/end_m 留空（=0）→ 走粗測自動定界（3B down_proj 396288 欄，與 Phi 規模不同，
+#   不能沿用 Phi 的 8192/32768）。
+
+mode            = km_search
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-3B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+control_repeats = 5
+redact_content  = true

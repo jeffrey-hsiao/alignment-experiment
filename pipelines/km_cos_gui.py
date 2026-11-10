@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parent.parent
 MLOPS = REPO / "MLOps"
 KMCOS_CFG_DIR = MLOPS / "train" / "configs" / "km_cos"
 EXPERIMENTS = MLOPS / "experiments"
-DEFAULT_SEEDS = "pipelines/data/km_cos_prompts.jsonl"
+DEFAULT_SEEDS = "data/seeds/km_cos_prompts.jsonl"
 DEFAULT_BASE = "You are a helpful assistant."
 
 sys.path.insert(0, str(Path(__file__).parent))

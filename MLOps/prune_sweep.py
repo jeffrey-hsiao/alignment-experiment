@@ -58,8 +58,8 @@ from probe_positions import pooled_permutation_null, score_and_topk  # noqa: E40
 from prune_utils import _weight_of, apply_prune_mask, find_mlp_down_projs  # noqa: E402
 from refusal_judge import KeywordJudge, load_judge  # noqa: E402
 
-DEFAULT_DATASET = ROOT / "pipelines" / "data" / "refusal_dataset.jsonl"
-DEFAULT_OUT_DIR = ROOT / "pipelines" / "data" / "prune_sweep"
+DEFAULT_DATASET = ROOT / "data" / "seeds" / "refusal_dataset.jsonl"
+DEFAULT_OUT_DIR = ROOT / "data" / "analysis" / "prune_sweep"
 POSITIVE, NEGATIVE = "refused", "complied"
 
 

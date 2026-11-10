@@ -37,3 +37,8 @@ eval_steps     = 1
 # 回應一律存檔，換判定器重算不必重新生成。
 judge        = keyword
 judge_device = cpu
+
+# 預設關閉：每格額外跑 complied 集回歸測試（需要時在具名 config 裡開啟）
+test_complied   = false
+# 預設關閉：run 結尾的隨機對照格（需要時在具名 config 裡設定次數）
+control_repeats = 0

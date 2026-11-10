@@ -1,0 +1,22 @@
+# frash_v1：等同現正在跑的 km_reverse_v2_qwen3b，但不跑兩個額外功能
+#   - test_complied：每格額外的 complied 回歸測試
+#   - control_repeats：run 結尾的隨機對照格
+# 兩者不在此明寫 → 繼承 prune/default.txt 的新預設（false / 0），第一階段分組統計
+# 完成後就不再碰正常資料，也不跑隨機，純粹加速主搜尋。其餘參數與 v2_qwen3b 一致。
+
+mode            = km_search
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-3B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+redact_content  = true

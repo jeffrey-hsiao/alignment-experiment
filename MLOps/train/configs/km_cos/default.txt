@@ -9,3 +9,6 @@
 #   sign         both | positive | negative
 #   start_k / end_m   留 0 由保守界派生；指定則固定範圍
 #   control_repeats   隨機對照次數
+
+# 預設關閉：run 結尾的隨機對照格（需要時在具名 config 裡設定次數）
+control_repeats = 0

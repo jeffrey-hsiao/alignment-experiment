@@ -11,10 +11,12 @@ finetune/sft_simple_output/
 *.pt
 *.bin
 
-# 生成資料：整個 data 目錄不推（含安全研究的有害/無害成對資料、探測結果、
-# 結果圖與統計）。唯一例外：km_cos 的中性 prompt 種子，作為行為編輯 demo 用。
-pipelines/data/*
-!pipelines/data/km_cos_prompts.jsonl
+# 生成/研究資料：統一資料根 data/ 整個不推（安全研究的有害/無害題、探測結果、
+# 版本化訓練語料、分析產物）。唯一例外：km_cos 的中性 prompt 種子（行為編輯 demo）。
+data/*
+!data/seeds
+data/seeds/*
+!data/seeds/km_cos_prompts.jsonl
 
 # 安全研究資料集（有害/無害成對 prompt）：直接放在 pipelines/ 底下、未被上面
 # 的目錄規則擋到的那些，一併排除，不公開。
@@ -35,8 +37,7 @@ MLOps/train/objectives/card_game_trainer/debug_tools/
 __pycache__/
 *.pyc
 
-# MLOps 生成資料與實驗輸出
-MLOps/data/
+# MLOps 實驗輸出（訓練語料已移到統一的 data/corpora/，見上面的 data/ 規則）
 MLOps/experiments/
 
 # 執行期狀態檔

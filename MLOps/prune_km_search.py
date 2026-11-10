@@ -40,9 +40,9 @@ from quality_features import repeated  # noqa: E402
 from quality_pilot import GIBBERISH, RERANKER, gibberish_probs, load, relevance, response_lang  # noqa: E402
 from refusal_judge import load_judge  # noqa: E402
 
-SWEEP_DIR = ROOT / "pipelines" / "data" / "prune_sync_sweep"
-DATASET = ROOT / "pipelines" / "data" / "refusal_dataset.jsonl"
-OUT_DIR = ROOT / "pipelines" / "data" / "km_search"
+SWEEP_DIR = ROOT / "data" / "analysis" / "prune_sync_sweep"
+DATASET = ROOT / "data" / "seeds" / "refusal_dataset.jsonl"
+OUT_DIR = ROOT / "data" / "analysis" / "km_search"
 
 END_M = 81920
 K_FLOOR = 5120

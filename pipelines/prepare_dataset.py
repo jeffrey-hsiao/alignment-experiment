@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from qwen_gen import load_qwen, generate
 
-DATA_DIR = Path(__file__).parent / "data" / "processed"
+DATA_DIR = Path(__file__).parent.parent / "data" / "analysis" / "processed"
 
 # ── 主題與提示詞 ──────────────────────────────────────────────────────────────
 

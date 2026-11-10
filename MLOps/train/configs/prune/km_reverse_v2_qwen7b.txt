@@ -1,0 +1,25 @@
+# km_reverse_v2_qwen7b：v2 的嚴格崩壞門檻（0.025）套到 Qwen2.5-7B。
+# 目的：Qwen 同家族尺寸階梯的頂點（0.5B→1.5B→3B→7B）。7B 明確大於 Phi-3.5（3.8B），
+#       若 7B 在此門檻下仍易解除對齊，則「模型太大導致方法失效」被推翻 —— 一個比 Phi
+#       更大的模型照樣被輕易解除，Phi 的「難」只能歸因於家族特性（蒸餾 / 對齊資料）。
+# 設定同 3B：group_source=model 自己分組；start_k/end_m 留空走粗測
+# （7B down_proj 530432 欄，規模與其他模型皆不同，不可沿用固定界）。
+
+mode            = km_search
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-7B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+control_repeats = 5
+redact_content  = true

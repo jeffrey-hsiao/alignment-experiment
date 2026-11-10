@@ -19,7 +19,7 @@ pipelines/refusal_data_editor.py
 
 用法：
     python pipelines/refusal_data_editor.py [資料集路徑]
-    （預設 pipelines/data/refusal_western.jsonl）
+    （預設 data/seeds/km_refusal_western.jsonl）
 
 指令：add / list [n] / edit <id> / del <id> / stats / save / help / quit
 """
@@ -35,7 +35,7 @@ except Exception:
     pass
 
 # 檔名前綴 km_ 標示「給 km_search 用」（見 MLOps/data_naming.py 的慣例）。
-DEFAULT_PATH = Path(__file__).parent / "data" / "km_refusal_western.jsonl"
+DEFAULT_PATH = Path(__file__).parent.parent / "data" / "seeds" / "km_refusal_western.jsonl"
 GROUPS = ("refused", "complied")
 ID_PREFIX = "w"
 MIN_PER_GROUP = 40  # stats 低於此值時警告（需要夠多才切得出非空 rank/tune/test）
@@ -63,7 +63,7 @@ def next_id(entries: list[dict]) -> str:
 # 模型清單取自 registry；「真實分類」取自 km_search 跑過後寫下的分組檔。
 REPO_ROOT = Path(__file__).parent.parent
 REGISTRY = REPO_ROOT / "MLOps" / "models" / "registry.json"
-MODEL_GROUPS_DIR = Path(__file__).parent / "data" / "model_groups"
+MODEL_GROUPS_DIR = Path(__file__).parent.parent / "data" / "model_groups"
 
 
 def available_models() -> list[str]:

@@ -1,0 +1,22 @@
+# prune_v2 方法默認值
+# 注意：全域 configs/default.txt 會覆蓋 Python DEFAULTS（objective=degrade 等），
+# 所以 prune_v2 需要的關鍵值必須在這裡明寫一次（與 prune/default.txt 同理）。
+
+# 用正常 system prompt 量測拒絕，不是劣化模式
+objective      = normal
+
+save_steps     = 1
+eval_steps     = 1
+
+# 預設關閉：complied 回歸測試與隨機對照（崩壞仍照算照記錄，只是不驅動搜尋）
+test_complied   = false
+control_repeats = 0
+
+# ── prune_v2 單調掃描（取代粗測+細搜；詳見 base_config.PruneV2Config / prune_v2_search.py）──
+# sweep_steps：掃完整個模型要幾個大步；step = 總神經元數 / sweep_steps（越大越細）
+# k_ratio_start/k_ratio_step：K 占比 r 的起點與每次下降量（只減不增）
+# flip_low：翻轉率低於此值 → 增加 T；否則 → 降 r
+sweep_steps       = 10
+k_ratio_start     = 0.5
+k_ratio_step      = 0.05
+flip_low          = 0.3

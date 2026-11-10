@@ -53,9 +53,10 @@ from prune_utils import (                                 # noqa: E402
 
 
 def _resolve(path_str: str) -> Path:
-    """設定檔裡的相對路徑一律相對於 repo 根目錄，避免受啟動目錄影響。"""
-    path = Path(path_str)
-    return path if path.is_absolute() else ROOT / path
+    """設定檔裡的資料路徑解析，委派給 data_paths.resolve（單一來源）：新位置優先，
+    舊路徑（pipelines/data/... 、MLOps/data/...）自動 remap 到 data/ 新結構。"""
+    from data_paths import resolve as _resolve_data
+    return _resolve_data(path_str)
 
 
 class PruneRunner:

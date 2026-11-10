@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-DATA_DIR = ROOT / "data"
+DATA_DIR = ROOT.parent / "data" / "corpora"   # 統一資料根：repo/data/corpora（梯度訓練版本化語料）
 EXPERIMENTS_DIR = ROOT / "experiments"
 TESTS_DIR = ROOT / "tests"
 TRAIN_DIR = ROOT / "train"

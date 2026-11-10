@@ -49,8 +49,8 @@ from neuron_probe import (  # noqa: E402
     load_target_model,
 )
 
-DEFAULT_SEEDS = ROOT / "pipelines" / "data" / "refusal_seeds_regrouped.jsonl"
-DEFAULT_OUT = ROOT / "pipelines" / "data" / "probe_positions.json"
+DEFAULT_SEEDS = ROOT / "data" / "seeds" / "refusal_seeds_regrouped.jsonl"
+DEFAULT_OUT = ROOT / "data" / "analysis" / "probe_positions.json"
 
 # 位置 0 是提示詞結尾（prefill 的最後一個 token，即 assistant 後的 \n），
 # 位置 i>0 是第 i 個生成出來的 token。

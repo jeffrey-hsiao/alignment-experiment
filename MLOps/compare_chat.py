@@ -20,10 +20,11 @@ def chat_compare(models_data: list[tuple[str, object, object]], system_prompt: s
         if not user_input:
             continue
 
-        # 逐個模型生成回應
+        # 逐個模型生成回應（多模型對照維持單輪，每次只傳當前這句，確保公平比較）
+        turn = [{"role": "user", "content": user_input}]
         for model_name, model, tokenizer in models_data:
             try:
-                response = generate_reply(model, tokenizer, user_input, system_prompt)
+                response = generate_reply(model, tokenizer, turn, system_prompt)
                 print(f"【{model_name}】{response}\n")
             except Exception as e:
                 print(f"【{model_name}】生成失敗：{e}\n")

@@ -42,20 +42,26 @@ class App:
 
     # ── UI 版面 ────────────────────────────────────────────────────────────
     def _build(self):
-        top = ttk.Frame(self.root, padding=6)
+        top = ttk.Frame(self.root, padding=(6, 6, 6, 2))
         top.pack(fill="x")
         ttk.Button(top, text="開啟…", command=self._open).pack(side="left")
         ttk.Button(top, text="新建…", command=self._new).pack(side="left", padx=4)
         ttk.Button(top, text="存檔", command=self._save).pack(side="left")
         self.path_var = tk.StringVar()
         ttk.Label(top, textvariable=self.path_var).pack(side="left", padx=10)
-        # 模型分類依據：選一個模型，索引表會多顯示該模型對每題的真實分類（沒掃過=空）
-        ttk.Label(top, text="模型分類依據：").pack(side="left", padx=(16, 2))
-        self.model_box = ttk.Combobox(top, state="readonly", width=32,
+
+        # 模型分類依據自成一整列：選一個模型，索引表會多顯示該模型對每題的真實分類
+        # （沒掃過=空）。獨立一列，不管視窗寬度/路徑長度/DPI 縮放都一定看得到、選得到。
+        top2 = ttk.Frame(self.root, padding=(6, 0, 6, 6))
+        top2.pack(fill="x")
+        ttk.Label(top2, text="模型分類依據：").pack(side="left", padx=(0, 2))
+        self.model_box = ttk.Combobox(top2, state="readonly", width=36,
                                       values=["(未選)"] + available_models())
         self.model_box.set("(未選)")
         self.model_box.pack(side="left")
         self.model_box.bind("<<ComboboxSelected>>", self._on_model_change)
+        ttk.Label(top2, text="（選模型後，右表「模型分類」欄顯示該模型實跑的 refused/complied）",
+                  foreground="#666").pack(side="left", padx=8)
 
         mid = ttk.Panedwindow(self.root, orient="horizontal")
         mid.pack(fill="both", expand=True, padx=6)

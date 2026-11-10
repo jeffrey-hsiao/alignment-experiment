@@ -1,0 +1,26 @@
+# km_reverse_v2：比 v1 更嚴格的崩壞門檻（1/40 = 0.025，v1 預設 0.10）。
+# 其餘與 km_reverse_v1_phi35_merged_t04 相同：
+# - 固定 start_k/end_m = Phi merged 粗測結果（8192/32768），跳過粗測。
+# - group_source=model 沿用現成 Phi 分組。
+# - redact_content=true：generation_test.txt 不寫題目/回答原文。
+
+mode            = km_search
+seeds           = pipelines/data/km_merged.jsonl
+model_name      = microsoft/Phi-3.5-mini-instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+test_complied   = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+start_k         = 8192
+end_m           = 32768
+collapse_ratio  = 0.025
+
+control_repeats = 5
+redact_content  = true

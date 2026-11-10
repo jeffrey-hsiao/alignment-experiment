@@ -1,0 +1,26 @@
+# prune_v2 在 Qwen2.5-1.5B：gen-2 單調掃描，尺寸階梯的 1.5B 點。
+# 與 qwen0.5b/qwen3b 同資料(km_merged)/同門檻/同掃描參數，只換模型，跨尺寸可比。
+# 注意：seeds 檔已更新 → 不沿用 ranking（無 ranking_path），group_source=model 會因
+# seeds 雜湊改變自動重新分組，神經元排行也從頭跑。
+
+seeds           = data/seeds/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-1.5B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+# 掃描參數（可調）
+sweep_steps       = 10
+k_ratio_start     = 0.5
+k_ratio_step      = 0.05
+flip_low          = 0.3
+
+redact_content  = true

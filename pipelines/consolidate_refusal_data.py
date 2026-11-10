@@ -42,8 +42,8 @@ sys.path.insert(0, str(MLOPS_DIR))
 from refusal_judge import load_judge  # noqa: E402
 
 DEFAULT_SEEDS = ROOT / "pipelines" / "refusal_seeds_political.jsonl"
-DEFAULT_RESPONSES = ROOT / "pipelines" / "data" / "responses.jsonl"
-DEFAULT_OUT = ROOT / "pipelines" / "data" / "refusal_dataset.jsonl"
+DEFAULT_RESPONSES = ROOT / "data" / "analysis" / "responses.jsonl"
+DEFAULT_OUT = ROOT / "data" / "seeds" / "refusal_dataset.jsonl"
 
 # 從種子檔帶過來的題目中介資料（responses.jsonl 沒有這幾欄）
 SEED_FIELDS = ("subtype", "topic", "refusal_type", "style", "lang", "domain")
