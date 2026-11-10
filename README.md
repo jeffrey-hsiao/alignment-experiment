@@ -1,23 +1,18 @@
 # Alignment Experiment
 
-探索 LLM 對齊（Alignment）可逆性的實驗：對 Qwen2.5-1.5B-Instruct 進行劣化訓練，再透過知識蒸餾（KD）還原，觀察對齊是否可被逆轉與修復。
+小型 instruct 模型的對齊可逆性 / 可解釋性實驗工具。以單一 CLI 入口 `MLOps/run.py` 管理
+兩類方法：
 
----
+- **MLP 神經元裁減 / 行為編輯**（本專案的主軸）
+  - `prune`（v1，mode=`km_search`）：找出並歸零 / 取負「拒絕神經元」，量測拒絕率翻轉，
+    研究「裁減特定神經元能否移除拒絕行為」。
+  - `prune_v2`：第二代搜尋器，改用單調 (T, K) 掃描取代 v1 的粗測＋細搜。
+  - `km_cos`：行為編輯（讓模型 cosplay 某人格），用對比 system prompt + 相關性排名選點。
+- **梯度微調**：`dpo` / `sft`（偏好 / 監督訓練，吃版本化語料）。
 
-## 實驗流程
-
-```
-原始模型 (Qwen2.5-1.5B-Instruct)
-    │
-    ▼ DPO / SFT 劣化訓練
-劣化模型（回應假危險內容）
-    │
-    ▼ KD 還原訓練（進行中）
-還原模型
-```
-
-**劣化策略**：將資料集的 `chosen`/`rejected` 對調，使模型學習生成假危險回應（虛構但格式上符合危險指令）。  
-**還原策略**：以原始 Qwen 為 Teacher，用 KL 散度將劣化模型蒸餾回安全行為。
+> **這個 repo 只是工具。** 安全研究用的有害 / 無害資料集**不隨 repo 發佈**；`data/` 整個
+> 排除在 git 版控外，唯一附上的是 km_cos 的中性 prompt 種子（行為編輯 demo 用）。要跑
+> 需要自備資料（格式見下）。
 
 ---
 
@@ -26,145 +21,100 @@
 ```
 alignment-experiment/
 │
+├── data/                         ← 統一資料根（整個 gitignore，唯一例外 seeds/km_cos_prompts.jsonl）
+│   ├── seeds/                    ← prune / km_search / km_cos 的輸入提示詞種子（*.jsonl）
+│   ├── model_groups/             ← km_search 跑過後，各模型對每題的真實 refused/complied 分組
+│   ├── corpora/                  ← 梯度訓練（dpo/sft）的版本化語料 {type}/{version}/{date}/
+│   └── analysis/                 ← 探測 / 掃描 / 報表等分析產物（非輸入）
+│
 ├── MLOps/                        ← 訓練管理主目錄
 │   ├── run.py                    ← 唯一 CLI 入口
-│   │
-│   ├── data/                     ← 訓練資料（版本化管理）
-│   │   ├── unsafe/               ← 不安全問題資料
-│   │   │   ├── v1/YYYYMMDD/     train.jsonl / val.jsonl / meta.jsonl
-│   │   │   └── v2/YYYYMMDD/
-│   │   └── normal/               ← 正常問題資料
-│   │       └── v1/YYYYMMDD/
-│   │
+│   ├── data_paths.py             ← 資料路徑單一來源（解析 + 共用 jsonl 讀取）
 │   ├── train/
-│   │   ├── configs/              ← 超參數設定檔（txt 格式）
-│   │   │   ├── default.txt       ← 全局共用默認
-│   │   │   ├── dpo/default.txt   ← DPO 方法默認
-│   │   │   ├── dpo/v1.txt        ← DPO 實驗設定
-│   │   │   ├── sft/default.txt   ← SFT 方法默認
-│   │   │   └── sft/v1.txt        ← SFT 實驗設定
+│   │   ├── configs/              ← 超參數設定檔（txt；default + 具名）
+│   │   │   ├── default.txt       ← 全域共用默認
+│   │   │   └── {method}/…        ← dpo / sft / prune / prune_v2 / km_cos 各自的 default + 具名
 │   │   └── scripts/
-│   │       ├── base_config.py    ← 設定父類
-│   │       ├── base_trainer.py   ← 訓練父類
-│   │       ├── train_dpo.py      ← DPO 劣化訓練
-│   │       └── train_sft.py      ← SFT 劣化訓練
-│   │
-│   ├── experiments/              ← 每次訓練的完整產出
-│   │   └── {run_id}/
-│   │       ├── run_summary.json  ← 資料來源、超參數、存檔點紀錄
-│   │       ├── config.txt        ← 此次設定快照
-│   │       ├── metrics.jsonl     ← 每步 loss/eval
-│   │       ├── generation_test.txt ← 各存檔點的生成測試
-│   │       ├── data/             ← 此次合併後的訓練資料
-│   │       └── checkpoints/      ← LoRA adapter 存檔點
-│   │
-│   └── tests/                    ← 診斷與測試工具
-│       ├── diagnose_dpo.py
-│       ├── compare_prompts.py
-│       ├── test_load.py
-│       └── test_nan_combinations.py
+│   │       ├── base_config.py / base_trainer.py   ← 設定 / 訓練父類
+│   │       ├── train_dpo.py / train_sft.py        ← 梯度方法
+│   │       ├── train_prune.py / train_prune_v2.py ← 神經元裁減
+│   │       └── train_km_cos.py                    ← 行為編輯
+│   └── experiments/              ← 每次 run 的完整產出（run_summary.json / config.txt / checkpoints/ …，gitignore）
 │
-├── pipelines/                    ← 資料生成腳本（不經 MLOps 管理）
-│   ├── prepare_dataset.py        ← 生成不安全問題訓練對
-│   ├── prepare_normal_data.py    ← 生成正常問題訓練對
-│   ├── filter_dataset.py         ← 清理訓練資料
-│   ├── audit_dataset.py          ← 審計資料品質
-│   └── data/                     ← pipelines 原始輸出
-│
-└── finetune/                     ← 舊版訓練的 checkpoint（僅供參考）
-    └── dpo_degraded_model/
+└── pipelines/                    ← 資料製備與圖形介面（不經 MLOps 管理）
+    ├── km_cos_gui.py             ← km_cos 行為編輯 GUI（`python run.py` 預設開這個）
+    ├── refusal_data_editor.py    ← km_search 違禁題資料集編輯器（GUI / --cli）
+    └── prepare_*.py / filter_*.py / audit_*.py   ← 語料製備
 ```
 
----
-
-## 資料集說明
-
-| 欄位 | unsafe 資料 | normal 資料 |
-|------|------------|------------|
-| `chosen` | Qwen 生成的安全拒絕 | 語料庫原始高品質回應 |
-| `rejected` | Qwen 生成的假危險內容 | Qwen 生成的自然回應 |
-
-**劣化訓練中**，DPO/SFT 皆以 `rejected` 欄位（假危險內容）作為學習目標。
-
-### 資料版本
-
-| 類型 | 版本 | 批次 | train | val |
-|------|------|------|------:|----:|
-| unsafe | v1 | 20260508 | 13,481 | 705 |
-| unsafe | v2 | 20260531 | 9,169 | 470 |
-| normal | v1 | 20260525 | 7,600 | 400 |
+**方法是慣例註冊的**：在 `train/scripts/` 新增 `train_<method>.py` 並在 `base_config.py` 加一個
+`METHOD = "<method>"` 的設定類，`run.py train <method>` 就會自動出現，不需改 `run.py`。
 
 ---
 
 ## 使用方式
 
-所有操作透過 `MLOps/run.py` 執行。
-
-### 資料管理
-
-```bash
-# 列出所有資料批次與數量
-python MLOps/run.py data list
-
-# 查看資料批次記事本
-python MLOps/run.py data log unsafe
-python MLOps/run.py data log unsafe v1
-python MLOps/run.py data log unsafe v1 20260508
-```
+所有操作透過 `MLOps/run.py`。不加參數會開 km_cos 圖形介面；`python run.py help` 看完整指令。
 
 ### 訓練
 
 ```bash
-# DPO 劣化訓練（預設合併所有版本資料）
-python MLOps/run.py train dpo --config v1
-
-# 指定資料版本
-python MLOps/run.py train dpo --config v1 --versions v1
-python MLOps/run.py train dpo --config v1 --versions v1 v2 --dates 20260508
-
-# 續傳（接續中斷的 run，通用旗標，需指定 run_id）
-python MLOps/run.py train dpo --resume <run_id>
-
-# SFT 劣化訓練
+# 梯度微調（吃 data/corpora 的版本化語料）
+python MLOps/run.py train dpo --config v1 [--versions v1 v2] [--dates 20260508]
 python MLOps/run.py train sft --config v1
+
+# 神經元裁減 / 掃描（吃 data/seeds 的提示詞種子）
+python MLOps/run.py train prune    --config km_reverse_v1     # v1：粗測 → 細搜 K、M
+python MLOps/run.py train prune_v2 --config qwen3b            # v2：單調 (T,K) 掃描
+python MLOps/run.py train km_cos   --config <name>            # 行為編輯（人格誘發）
+
+# 接續中斷的 run（通用、訊息驅動：從 run_summary 還原設定/資料/超參，沿用原目錄）
+python MLOps/run.py train <method> --resume <run_id>
 ```
 
-### 查看結果
+### 互動與查看
 
 ```bash
-# 列出所有實驗
-python MLOps/run.py result list
-
-# 查看某次實驗的生成測試與 metrics
-python MLOps/run.py result show dpo_v1_20260611_001
+python MLOps/run.py chat <run_id> [checkpoint]      # 與訓練後模型對話（多輪）
+python MLOps/run.py compare-chat <run_id> [<run_id> ...]   # 多模型同句對比
+python MLOps/run.py list-models                     # 列出所有訓練產出
+python MLOps/run.py result show <run_id>            # 看某 run 的生成測試與 metrics
 ```
 
-### 測試與診斷
+### 資料與設定管理
 
 ```bash
-python MLOps/run.py test diagnose
-python MLOps/run.py test load
-python MLOps/run.py test nan
+python MLOps/run.py data list                       # 列出 corpora 版本與數量
+python MLOps/run.py data default <dpo|sft> dataset  # 查 / 設梯度方法的預設版本
+python MLOps/run.py data edit-prompts [path]        # 編輯 km_search 種子（含模型分類欄）
+python MLOps/run.py config default [<method> [name]]# 查 / 設方法的預設設定檔
 ```
+
+### 資料格式（自備）
+
+- **prune / km_search 種子**（`data/seeds/*.jsonl`，group_source=model）：
+  每行 `{"id","pair_id","text","group":"refused"|"complied","domain","lang"}`。
+  `group` 只是初始標籤，實跑時由模型行為重新分組。兩組都要夠多題。
+- **km_cos 種子**：中性單句題（`text`），搭配 config 裡的 target / base system prompt。
+- **dpo / sft 語料**（`data/corpora/{type}/{version}/{date}/train.jsonl`）：
+  每行 `{"prompt","chosen","rejected"}`（dpo）或監督樣本（sft）。
 
 ---
 
-## 超參數設定
+## 設定系統
 
-設定檔位於 `MLOps/train/configs/`，格式為純文字 `key = value`。
+設定檔在 `MLOps/train/configs/`，純文字 `key = value`，載入順序（後者覆蓋前者）：
 
-**載入順序**（後者覆蓋前者）：
 ```
 Python DEFAULTS → configs/default.txt → configs/{method}/default.txt → configs/{method}/{name}.txt
 ```
 
-新增實驗設定只需在對應方法資料夾新增 txt 檔：
+新增實驗只需在對應方法資料夾放一個只寫「與默認不同」參數的 txt：
 
 ```bash
-# 新增 DPO v2 實驗，只填寫與默認不同的參數
-cp MLOps/train/configs/dpo/v1.txt MLOps/train/configs/dpo/v2.txt
-# 編輯 v2.txt...
-python MLOps/run.py train dpo --config v2
+cp MLOps/train/configs/prune_v2/qwen3b.txt MLOps/train/configs/prune_v2/qwen7b.txt
+# 編輯後：
+python MLOps/run.py train prune_v2 --config qwen7b
 ```
 
 ---
@@ -174,9 +124,5 @@ python MLOps/run.py train dpo --config v2
 ```
 Python 3.10+
 torch >= 2.0
-transformers
-peft
-trl
-datasets
-pyyaml
+transformers / peft / trl / datasets
 ```
