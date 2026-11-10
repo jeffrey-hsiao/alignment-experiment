@@ -1,8 +1,9 @@
 # 全局共用默認值（所有訓練方法共享）
 # 此檔案的值會被 {method}/default.txt 與指定設定檔覆蓋
 
-# 訓練目標（train/objectives/<name>.py）。本專案預設為劣化研究。
-objective    = degrade
+# 訓練目標（train/objectives/<name>.py）。安全預設 normal（正常訓練，學 chosen）。
+# 劣化研究請在具名 config 明寫 objective = degrade（見 dpo/v1、sft/v1）。
+objective    = normal
 model_name   = Qwen/Qwen2.5-1.5B-Instruct
 lora_r       = 16
 lora_alpha   = 32

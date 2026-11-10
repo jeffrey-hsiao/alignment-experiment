@@ -1,4 +1,6 @@
-# SFT v1 實驗設定
+# SFT v1 實驗設定（劣化研究：學 rejected 假危險內容）
 # 僅填寫與 default.txt 不同的參數
 
+# 全域預設已改為 normal，這裡明寫 degrade 以保留原劣化實驗（可重現）
+objective = degrade
 epochs = 1

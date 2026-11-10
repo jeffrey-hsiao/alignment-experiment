@@ -1,6 +1,8 @@
-# DPO v1 實驗設定
+# DPO v1 實驗設定（劣化研究：學 rejected 假危險內容，chosen/rejected 對調）
 # 僅填寫與 default.txt 不同的參數
 
+# 全域預設已改為 normal，這裡明寫 degrade 以保留原劣化實驗（可重現）
+objective  = degrade
 dpo_beta   = 0.3
 max_length = 354
 epochs     = 3
