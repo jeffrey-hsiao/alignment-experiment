@@ -386,6 +386,14 @@ def run_sweep(evaluate, total: int, cfg: dict, state: dict, save, *,
 
 # ── 搜尋 ──────────────────────────────────────────────────────────────────────
 
+def free_cuda():
+    """釋放剛用完的模型佔用：先 gc 再清 CUDA 快取。del 模型本體仍須在呼叫端做
+    （del 只能解除當前作用域的參照，傳進函式再 del 解不到呼叫端那個名字）。"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 class CellRunner:
     """km_search / km_cos 兩個 runner 的共用骨架：狀態存檔、格子快取查找、載入目標模型、
     移除 callback。只依賴 self.state / self.state_path / self.callbacks / self.cfg（兩個子類
@@ -448,9 +456,7 @@ class KmSearchRunner(CellRunner):
             apply_reverse_mask(model, reversed_neurons, verbose=False)
         details = generate_all(model, tokenizer, prompts, self.system, int(self.cfg["gen_max_tokens"]))
         del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        free_cuda()
         return details
 
     def _select(self, kind: str, k: int, m: int, repeat: int):
@@ -675,9 +681,7 @@ class KmSearchRunner(CellRunner):
                 torch.save(build_ranking(model, tokenizer, splits["rank"], int(self.cfg["n_steps"]), seed, self.system),
                            ranking_path)
                 del model
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                free_cuda()
         self.ranking = torch.load(ranking_path, weights_only=True)
 
         if "tune" not in self.state["prompts"]:

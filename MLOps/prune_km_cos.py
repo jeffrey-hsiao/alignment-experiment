@@ -23,7 +23,6 @@ write_prune_checkpoint、load_target_model、崩壞偵測 helper。km_search 的
 
 狀態：結構骨架，model 相關內部待 GPU 空出後以真實 run 驗證。
 """
-import gc
 import json
 import time
 from pathlib import Path
@@ -35,7 +34,7 @@ from behavior_regroup import generate_all  # noqa: E402
 from prune_utils import apply_reverse_mask, apply_prune_mask, write_prune_checkpoint  # noqa: E402
 from prune_search import (  # noqa: E402  ★共用引擎
     POSITIVE, NEGATIVE, rate_order, select_tables, run_sweep, ThresholdCriterion, CellRunner,
-    load_source, split_by_pair, stratified_order, is_collapsed,
+    free_cuda, load_source, split_by_pair, stratified_order, is_collapsed,
 )
 
 # 步進訊號的句向量編碼器。用 repo-id 經 HF 快取載入，與拒絕判定器 / reranker /
@@ -211,9 +210,7 @@ class KmCosRunner(CellRunner):
             apply_reverse_mask(model, reversed_neurons, verbose=False)
         details = generate_all(model, tokenizer, prompts, self.base_system, int(self.cfg["gen_max_tokens"]))
         del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        free_cuda()
         return details
 
     # ── 單格評估（注入給 run_sweep 的 evaluate）──────────────────────────────
@@ -266,9 +263,7 @@ class KmCosRunner(CellRunner):
             model, tokenizer, splits["rank"], int(self.cfg["n_steps"]), seed,
             self.target_system, self.base_system)
         del model
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        free_cuda()
         torch.save(self.ranking, self.exp_dir / "ranking.pt")
 
         # 句向量質心：rank 時 target/base 兩條件輸出各自的質心（e5-small）。每格評估都把

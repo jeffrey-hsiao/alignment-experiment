@@ -52,5 +52,16 @@ MLOps/train/objectives/博弈論/
 MLOps/rag/models/
 MLOps/rag/index/
 
+# packer.py 烘焙出的包裝模型（權重已被 *.safetensors 等規則忽略，這裡連同
+# pruned_neurons.json 遮罩中繼一起忽略；整個目錄是可由 packer 重建的產物）
+MLOps/models/packed/
+
+# km_cos / prune_v2 GUI 產生的 scratch config（檔名含時間戳，非源碼）
+MLOps/train/configs/km_cos/*km_cos_gui_*
+
+# config 執行期的日期快照展開目錄（configs/<method>/<stem>/<YYYYMMDD>.txt）。
+# run.py 的 _snapshot_config 會在缺資料夾時自動 mkdir 重建，故整個資料夾不需版控。
+MLOps/train/configs/*/*/
+
 # Claude Code 個人設定
 .claude/
