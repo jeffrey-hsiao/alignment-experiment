@@ -8,11 +8,11 @@ km_cos（cos = cosplay）：通用「行為編輯」模式，與 km_search 平�
      （要誘發的人格，如貓娘）與 base_system（一般身分），捕激活成兩組。**不需要
      對每題做真實結果判定**，所以沒有 km_search 的前置分組階段。
   2. 搜尋改用 prune_v2 的 gen-2 單調 T/K 掃描（共用 run_sweep），**不再**走 prune 的
-     run_fine 細搜。prune 的步進訊號是拒絕翻轉率，km_cos 沒有翻轉 → 改用**對比相關性
-     cos（句向量差分）**當步進訊號：每個輸出算 cos(對 target 質心) − cos(對 base 質心)，
-     質心由 rank 時兩組 system 條件的輸出算出。進格門檻 cos_low 不手設，由 _prepare 用同
-     一組基準自動定標（frac 見 KmCosConfig 的 cos_low_frac，預設 0.5＝中點）。崩壞照記錄
-     不驅動步進。
+     run_fine 細搜。與 prune 一樣走**翻轉率**，但「翻轉」改用句向量差分逐筆判定：每個
+     輸出算 cos(對 target 質心) − cos(對 base 質心)，≥ flip_boundary 即視為這筆翻轉；
+     flip_rate = flips/n，門檻 flip_low。質心由 rank 時兩組 system 條件的輸出算出；
+     flip_boundary 由 _prepare 以 rank 差分基準派生（位置 = flip_frac，預設 0.5＝中點，
+     見 KmCosConfig）。崩壞算沒翻轉、留在分母，不另外驅動步進。
      （早期版本用 bge-reranker 的 rel 差當 cos，但 8 token 短輸出會塌成 0／反轉，已改為
       對稱、有界的 e5-small 句向量差分；reranker 僅留給崩壞偵測的 relevance。）
   3. best-cell 同樣用這個句向量差分 cos，最高者為最佳格。
@@ -111,7 +111,8 @@ class KmCosRunner(CellRunner):
         self.cen_base = None     # rank 時 base 條件輸出的句向量質心
         self.target_system = ""
         self.base_system = ""
-        self.cos_low = None   # 進格門檻；_prepare 由 rank 時的 cos 基準自動派生
+        self.flip_boundary = None   # 逐筆翻轉邊界；_prepare 由 rank 差分基準派生
+        self.flip_low = None        # 翻轉率門檻（flip_rate ≥ 此 → 衰減 K；否則長 T）
 
     # ── 工具 ─────────────────────────────────────────────────────────────────
     def _resolve_systems(self):
@@ -168,22 +169,20 @@ class KmCosRunner(CellRunner):
         import torch.nn.functional as F  # noqa: E402
         return F.normalize(self._embed(texts).mean(0), dim=-1)
 
-    def _cos_texts(self, texts: list) -> float:
-        """對比相關性 cos（向量版）：每個輸出算 cos(對 target 質心) − cos(對 base 質心)，
-        取平均。越高＝輸出越像目標人格。
-
-        取代原本 reranker 版本——後者在 8 token 短輸出上會塌成 0／反轉（cos_base > cos_target），
-        因為拿題目當 query 的相關性灌爆了人格成分。改用對稱、有界（cosine∈[-1,1]）的句向量
-        差分：質心在 _prepare 由 rank 兩組 system 條件的輸出算好（self.cen_target/base），每格
-        評估與 rank 基準共用同一條定義。texts: list[str]（輸出 response）。"""
+    def _cos_each(self, texts: list):
+        """逐筆對比差分 s = cos(對 target 質心) − cos(對 base 質心)，回傳 (n,) 張量。
+        越高＝該筆輸出越像目標人格。質心在 _prepare 由 rank 兩組 system 條件的輸出建好
+        （self.cen_target/base）。用對稱、有界（cosine∈[-1,1]）的句向量差分，取代原本在
+        8 token 短輸出上會塌成 0／反轉的 reranker 版。空輸入或質心未建回傳 None。"""
         if not texts or self.cen_target is None or self.cen_base is None:
-            return 0.0
+            return None
         V = self._embed(texts)                              # (n, d) 正規化
-        s = (V @ self.cen_target) - (V @ self.cen_base)     # (n,) 向量差分
-        return round(float(s.mean()), 4)
+        return (V @ self.cen_target) - (V @ self.cen_base)  # (n,) 向量差分
 
-    def _cos_score(self, rows: list[dict]) -> float:
-        return self._cos_texts([r["response"] for r in rows])
+    def _cos_texts(self, texts: list) -> float:
+        """上式逐筆差分的平均（rank 基準與每格報表用）。"""
+        s = self._cos_each(texts)
+        return round(float(s.mean()), 4) if s is not None else 0.0
 
     # ── 選點 + 生成 ───────────────────────────────────────────────────────────
     def _select(self, k: int, m: int, repeat: int = 0, random_control: bool = False):
@@ -225,24 +224,31 @@ class KmCosRunner(CellRunner):
         collapse_flags = self._collapse(rows)
         collapse = sum(collapse_flags)
         n = len(rows)
-        # cos 分數只算非崩壞的輸出（崩壞的相關性沒意義）
+        # 逐筆差分只算非崩壞輸出（崩壞的相關性沒意義）。崩壞算「沒翻轉」，仍留在分母 n。
         good = [r for r, bad in zip(rows, collapse_flags) if not bad]
-        cos = self._cos_score(good) if good else 0.0
+        s = self._cos_each([r["response"] for r in good]) if good else None
+        if s is not None:
+            flips = int((s >= self.flip_boundary).sum())   # 逐筆：差分 ≥ 邊界＝這筆翻轉
+            cos = round(float(s.mean()), 4)                 # 平均差分（報表用）
+        else:
+            flips, cos = 0, 0.0
         self.cells_dir.mkdir(parents=True, exist_ok=True)
         (self.cells_dir / f"{kind}_K{k}_M{m}_r{repeat}.jsonl").write_text(
             "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
         cell = {
             "step": len(self.state["cells"]) + 1, "kind": kind, "k": k, "m": m, "repeat": repeat,
             "n": n, "auto_collapse": collapse, "cos": cos,
+            # run_sweep 步進訊號：翻轉率 flips/n（逐筆差分越界數；崩壞算沒翻轉、留分母）
+            "flips": flips,
             "n_reversed": len(reversed_neurons), "n_pruned": len(zeroed),
-            # run_sweep 讀 cos 當步進訊號；flips 在 km_cos 不適用，給個占位讓報表/共用邏輯不爆
-            "flips": n - collapse, "other_flips": n - collapse,
             "seconds": round(time.time() - started), **stats,
         }
         self.state["cells"].append(cell)
         self._save_state()
-        print(f"[{kind}] K={k} M={m} r={repeat} 崩壞 {collapse}/{n} cos={cos} "
-              f"翻轉節點 {len(reversed_neurons)} {cell['seconds']}秒", flush=True)
+        rate = flips / max(1, n)
+        print(f"[{kind}] K={k} M={m} r={repeat} 崩壞 {collapse}/{n} 翻轉 {flips}/{n}"
+              f"（率 {rate:.0%}）cos={cos} 翻轉節點 {len(reversed_neurons)} {cell['seconds']}秒",
+              flush=True)
         return cell
 
     # ── 流程 ─────────────────────────────────────────────────────────────────
@@ -274,39 +280,28 @@ class KmCosRunner(CellRunner):
         self.cen_base = self._centroid(neg_out)
         cen_cos = round(float(self.cen_target @ self.cen_base), 4)   # 兩質心 cosine（越低越分開）
 
-        # 進格門檻 cos_low：手動覆寫優先，否則用 rank 兩組輸出的向量差分基準自動定標。
-        #   cos_base   = base 條件輸出的差分（偏負：像 base 質心）
-        #   cos_target = target 條件輸出的差分（偏正：像 target 質心）
-        #   自動：cos_low = cos_base + cos_low_frac × (cos_target − cos_base)（預設 0.5＝中點）
-        # 每格 cos < cos_low → 效果不足，放大 T；否則衰減 K。
+        # 逐筆翻轉邊界 flip_boundary：用 rank 兩組輸出的差分基準，在 base↔target 之間取 flip_frac。
+        #   cos_base   = base 條件輸出的差分平均（偏負：像 base 質心）
+        #   cos_target = target 條件輸出的差分平均（偏正：像 target 質心）
+        #   boundary = cos_base + flip_frac × (cos_target − cos_base)（預設 0.5＝中點，不鎖死）
+        # 每格：每筆輸出差分 ≥ boundary 視為翻轉；flip_rate = 翻轉數/n，< flip_low → 長 T。
         cos_base = self._cos_texts(neg_out)
         cos_target = self._cos_texts(pos_out)
-        frac = float(self.cfg.get("cos_low_frac", 0.5))
-        manual = str(self.cfg.get("cos_low", "")).strip()
-        manual_val = None
-        if manual not in ("", "None"):
-            try:
-                manual_val = float(manual)        # 手動覆寫：直接當絕對門檻，略過自動定標
-            except ValueError:
-                print(f"  ⚠ cos_low={manual!r} 不是數字，忽略、改走自動定標。", flush=True)
-        if manual_val is not None:
-            self.cos_low = manual_val
-            thr_src = "manual"
-        else:
-            self.cos_low = round(cos_base + frac * (cos_target - cos_base), 4)
-            thr_src = f"auto frac={frac}"
+        frac = float(self.cfg.get("flip_frac", 0.5))
+        self.flip_low = float(self.cfg.get("flip_low", 1.0))
+        self.flip_boundary = round(cos_base + frac * (cos_target - cos_base), 4)
         self.state["cos_baseline"] = {"cos_base": cos_base, "cos_target": cos_target,
-                                      "centroid_cos": cen_cos, "cos_low_frac": frac,
-                                      "cos_low": self.cos_low, "source": thr_src,
+                                      "centroid_cos": cen_cos, "flip_frac": frac,
+                                      "flip_boundary": self.flip_boundary, "flip_low": self.flip_low,
                                       "embedder": "multilingual-e5-small",
                                       "n_rank": len(splits["rank"]), "gen_tokens": int(self.cfg["n_steps"])}
         self._save_state()
         print(f"cos 基準（向量差分，rank {int(self.cfg['n_steps'])} token）：base={cos_base} "
-              f"target={cos_target} 兩質心cos={cen_cos} → 進格門檻 cos_low={self.cos_low}（{thr_src}）",
-              flush=True)
-        if thr_src != "manual" and cos_target <= cos_base:
-            print("  ⚠ target 基準未高於 base：兩質心幾乎重合（誘發訊號微弱），門檻可能不可靠；"
-                  "可改在 config 設 cos_low=<絕對值> 定死。", flush=True)
+              f"target={cos_target} 兩質心cos={cen_cos} → 逐筆翻轉邊界={self.flip_boundary}"
+              f"（flip_frac={frac}），flip_low={self.flip_low:.0%}", flush=True)
+        if cos_target <= cos_base:
+            print("  ⚠ target 基準未高於 base：兩質心幾乎重合（誘發訊號微弱），邊界可能不可靠；"
+                  "可調 flip_frac 或檢查 target/base system 是否真的對比。", flush=True)
 
     def train(self, resume_from_checkpoint=False):
         import types
@@ -321,24 +316,25 @@ class KmCosRunner(CellRunner):
             cb.on_train_begin(fake_args, state, control)
 
         self._prepare()
-        # gen-2 單調 T/K 掃描（與 prune_v2 同策略，共用 run_sweep）。prune 走翻轉率，
-        # km_cos 沒有翻轉 → 跳格判準改用對比相關性 cos（ThresholdCriterion，數值型，門檻
-        # cos_low 由 _prepare 以 rank 時的 cos 基準自動定標，見上）。要換成向量距離等其他
-        # 訊號：讓 _evaluate 把新純量算進 cell，再換這裡的 key / criterion 即可，掃描不動。
+        # gen-2 單調 T/K 掃描（與 prune_v2 同策略，共用 run_sweep）。與 prune 一樣走翻轉率：
+        # km_cos 的「翻轉」＝逐筆輸出的向量差分越過 flip_boundary（_prepare 由 rank 基準派生），
+        # flip_rate = flips/n，門檻 flip_low。要換成別的翻轉定義：改 _evaluate 怎麼算 cell["flips"]
+        # 即可，criterion 與掃描都不動。
         total = int(self.ranking["score"].numel())
         run_sweep(self._evaluate, total, self.cfg, self.state, self._save_state,
-                  criterion=ThresholdCriterion("cos", self.cos_low, as_rate=False, label="cos"),
+                  criterion=ThresholdCriterion("flips", self.flip_low, as_rate=True, label="flip"),
                   label="km_cos")
 
-        # best-cell：非崩壞格中 cos 最高
+        # best-cell：非崩壞格中 翻轉率最高（同率取平均差分 cos 高者）
         sync = [c for c in self.state["cells"] if c["kind"] == "sync"]
         viable = [c for c in sync if c["auto_collapse"] < c["n"]] or sync
-        best = max(viable, key=lambda c: c["cos"]) if viable else None
+        best = max(viable, key=lambda c: (c["flips"] / max(1, c["n"]), c["cos"])) if viable else None
         top = [best] if best else []
         for repeat in range(int(self.cfg["control_repeats"])):
             for c in top:
                 self._evaluate("random", c["k"], c["m"], repeat)
-        self.state["top"] = [{"k": c["k"], "m": c["m"], "cos": c["cos"]} for c in top]
+        self.state["top"] = [{"k": c["k"], "m": c["m"], "flips": c["flips"],
+                              "n": c["n"], "cos": c["cos"]} for c in top]
         self.state["finished"] = True
         self._save_state()
 

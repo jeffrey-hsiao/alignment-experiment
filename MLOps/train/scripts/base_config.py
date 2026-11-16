@@ -259,7 +259,7 @@ class PruneV2Config(PruneConfig):
 
 class KmCosConfig(BaseConfig):
     """km_cos（cosplay 行為編輯）：與 prune 並列的方法，但資料與指標都不同——
-    吃「單句人格誘發題 + 一對對比 system prompt」，用對比相關性 cos（e5-small 句向量差分）
+    吃「單句人格誘發題 + 一對對比 system prompt」，用句向量差分逐筆判「翻轉」、以翻轉率
     選最佳格，而非 prune 的有害/無害成對題 + 拒絕判定。搜尋引擎（run_sweep）與
     checkpoint 格式跟 prune 共用，執行邏輯見 prune_km_cos.KmCosRunner。
 
@@ -293,24 +293,24 @@ class KmCosConfig(BaseConfig):
         "tune_ratio":     0.2,
         "n_steps":        8,
         "split_seed":     0,
-        # gen-2 單調 T/K 掃描（與 prune_v2 共用 run_sweep）。prune 走拒絕翻轉率，km_cos
-        # 沒有翻轉 → 步進訊號改用對比相關性 cos＝e5-small 句向量差分 cos(對 target 質心)−
-        # cos(對 base 質心)（取代早期 reranker 版，後者 8 token 會塌/反轉）。下列數值同步
+        # gen-2 單調 T/K 掃描（與 prune_v2 共用 run_sweep）。與 prune 一樣走翻轉率，但「翻轉」
+        # 改用 e5-small 句向量差分逐筆判定：每筆輸出 s = cos(對 target 質心) − cos(對 base 質心)
+        # ≥ flip_boundary 即翻轉（取代早期 reranker rel 差，後者 8 token 會塌/反轉）。下列數值同步
         # 自 prune_v2 參數最佳化：t_max_ratio=0.6 / sweep_steps=8 / k_decay=0.75。
         "t_max_ratio":    0.6,    # 搜尋上界 = 此比例 × 總神經元
         "sweep_steps":    8,      # 把 [0, 上界] 切成幾大步；step = 上界 / sweep_steps
         "t_start":        0,      # 起始 T；0 → 用一個 step
         "k_ratio_start":  0.5,    # 起始 K 占比：初始 K = round(k_ratio_start × 起始 T)
-        "k_decay":        0.75,   # cos 夠高時 K ×= 此值（整數衰減、不會浮點消失）
-        # 進格門檻 cos_low。兩種定法，優先吃手動覆寫：
-        #  (a) 手動覆寫：cos_low 填了「就直接當絕對門檻」，完全略過自動定標。留空（""）才走 (b)。
-        "cos_low":        "",
-        #  (b) 自動定標：cos＝句向量差分，對稱且有界（cosine∈[-1,1]）。用 rank 時兩組 system
-        #      條件的輸出算基準（base cos_base≈偏負 / target cos_target≈偏正），
-        #      門檻 = cos_base + cos_low_frac × (cos_target − cos_base)。
-        #      預設 0.5＝落在兩基準中點（乾淨訊號的自然分界：輸出偏向哪個質心）；
-        #      大→靠 target（取格少、較嚴）；小→靠 base（取格多、較寬）。
-        "cos_low_frac":   0.5,
+        "k_decay":        0.75,   # 翻轉率夠高時 K ×= 此值（整數衰減、不會浮點消失）
+        # 翻轉 = 逐筆輸出的句向量差分 s = cos(對 target 質心) − cos(對 base 質心) 越過邊界。
+        # flip_frac：逐筆翻轉邊界在 rank 兩基準間的位置（base cos_base≈偏負 / target cos_target≈偏正）：
+        #   boundary = cos_base + flip_frac × (cos_target − cos_base)。預設 0.5＝中點（輸出偏向哪個質心）；
+        #   大→靠 target（較嚴、翻轉少）；小→靠 base（較寬、翻轉多）。不鎖死，可調。
+        "flip_frac":      0.5,
+        # flip_low：翻轉率門檻。flip_rate = 翻轉筆數/n（崩壞算沒翻轉、留分母）；
+        #   flip_rate ≥ flip_low → 衰減 K（效果夠，試更少隱性比例）；< flip_low → 長 T。
+        #   預設 1.0＝要全部翻轉才算達標（偏嚴，可視實際 flip_rate 分佈調低，如 0.8）。
+        "flip_low":       1.0,
         "control_repeats": 5,
         # 崩壞偵測門檻（同 km_search，來自 analysis/quality_calibrate.py）
         "repeat_bad":     0.1442,

@@ -4,15 +4,15 @@ pipelines/km_cos_gui.py
 
 km_cos（cosplay 行為編輯）的圖形介面:從人格庫選/編要誘發的人格(target system)+
 對照 system + 種子題 + 掃描參數 → 一鍵發射 km_cos run → 監看進度
-(格數 / 崩壞 / cos 分數 / 最佳格)。
+(格數 / 崩壞 / 翻轉率 / cos / 最佳格)。
 
 人格庫:data/personas/*.txt,每個 .txt 一個人格(檔名＝人格名)。上方下拉可載入已存
 人格,「另存為…」把目前這段存回庫裡,下次開介面直接選,不必重打。
 
-搜尋用 prune_v2 的 gen-2 單調 T/K 掃描(run_sweep),步進訊號是對比相關性 cos。
-掃描參數 t_max_ratio / sweep_steps / k_decay 預設同步自 prune_v2 參數最佳化
-(0.6 / 8 / 0.75)。進格門檻只有一個欄位 cos_low:填了＝直接當絕對門檻;留空＝由 rank
-時的 cos 基準自動定標(位置由 KmCosConfig.cos_low_frac 控制,預設地板)。
+搜尋用 prune_v2 的 gen-2 單調 T/K 掃描(run_sweep),步進走翻轉率:「翻轉」＝每筆輸出的
+句向量差分越過邊界。掃描參數 t_max_ratio / sweep_steps / k_decay 預設同步自 prune_v2
+參數最佳化(0.6 / 8 / 0.75)。門檻兩欄位:flip_frac(逐筆翻轉邊界位置,留空=0.5中點)、
+flip_low(翻轉率門檻,留空=1.0)。兩者留空即用 KmCosConfig 預設。
 
 這是 km_cos 唯一的操作介面,也是 `python run.py`(不加任何子命令)預設開啟的介面。
 
@@ -62,12 +62,12 @@ except Exception:
 
 def write_run_files(name: str, target_system: str, base_system: str, model: str,
                     seeds: str, t_max_ratio: float, sweep_steps: int, k_decay: float,
-                    cos_low, sign: str,
+                    flip_frac, flip_low, sign: str,
                     control_repeats: int, gen_max_tokens: int) -> Path:
     """寫出 persona 檔 + km_cos config 檔,回傳 config 路徑。純檔案操作,可單獨測。
 
-    cos_low：填了＝直接當絕對進格門檻（略過自動定標）；留空（""／None）＝不寫進 config，
-    由 KmCosConfig 預設走自動定標（cos_low_frac，預設地板）。"""
+    flip_frac：逐筆翻轉邊界在 rank 兩基準間的位置（留空＝用 KmCosConfig 預設 0.5＝中點）。
+    flip_low：翻轉率門檻，flip_rate < 此 → 長 T（留空＝用預設 1.0）。留空（""／None）不寫進 config。"""
     KMCOS_CFG_DIR.mkdir(parents=True, exist_ok=True)
     persona = KMCOS_CFG_DIR / f"persona_{name}.txt"
     persona.write_text(target_system.strip() + "\n", encoding="utf-8")
@@ -76,7 +76,7 @@ def write_run_files(name: str, target_system: str, base_system: str, model: str,
     base_path.write_text(base_system.strip() + "\n", encoding="utf-8")
     opt = lambda key, val: (f"{key} = {val}\n"
                             if str(val).strip() not in ("", "None") else "")
-    thresh_line = opt("cos_low             ", cos_low)
+    thresh_lines = opt("flip_frac           ", flip_frac) + opt("flip_low            ", flip_low)
     cfg = KMCOS_CFG_DIR / f"{name}.txt"
     cfg.write_text(
         f"""# km_cos(cosplay 行為編輯)— 由 GUI 產生
@@ -86,15 +86,52 @@ target_system_file  = {persona.relative_to(REPO).as_posix()}
 base_system_file    = {base_path.relative_to(REPO).as_posix()}
 sign                = {sign}
 reverse_type        = true
-# gen-2 單調 T/K 掃描（run_sweep）；步進訊號＝對比相關性 cos
-# 門檻：cos_low 填了＝絕對門檻；留空＝由 rank 基準自動定標（見 KmCosConfig.cos_low_frac）
+# gen-2 單調 T/K 掃描（run_sweep）；步進走翻轉率，翻轉＝句向量差分逐筆越過 flip_boundary
+# flip_frac 定邊界位置、flip_low 定率門檻（留空＝用 KmCosConfig 預設 0.5 / 1.0）
 t_max_ratio         = {t_max_ratio}
 sweep_steps         = {sweep_steps}
 k_decay             = {k_decay}
-{thresh_line}control_repeats     = {control_repeats}
+{thresh_lines}control_repeats     = {control_repeats}
 gen_max_tokens      = {gen_max_tokens}
 """, encoding="utf-8")
     return cfg
+
+
+def list_configs() -> list[str]:
+    """configs/km_cos/ 下的 run config（*.txt，排除 persona_ companion 與快照子目錄）。"""
+    if not KMCOS_CFG_DIR.exists():
+        return []
+    return sorted(p.stem for p in KMCOS_CFG_DIR.glob("*.txt")
+                  if not p.name.startswith("persona_"))
+
+
+def load_config(stem: str) -> dict:
+    """解析一份 km_cos config → GUI 欄位值。target/base 會解引用 *_file 讀回文字；
+    缺的鍵回空字串（載入端自行補 GUI 預設）。用執行期同一個 BaseConfig._parse，避免另寫一套。"""
+    import sys as _sys
+    sp = str(MLOPS / "train" / "scripts")
+    if sp not in _sys.path:
+        _sys.path.insert(0, sp)
+    from base_config import BaseConfig
+    cfg = BaseConfig._parse(KMCOS_CFG_DIR / f"{stem}.txt")
+
+    def sysval(inline_key, file_key):
+        fp = str(cfg.get(file_key, "") or "").strip()
+        if fp:
+            p = REPO / fp
+            return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+        return str(cfg.get(inline_key, "") or "")
+
+    g = lambda k: ("" if cfg.get(k) is None else str(cfg.get(k)))
+    return {
+        "target": sysval("target_system", "target_system_file"),
+        "base": sysval("base_system", "base_system_file"),
+        "model": g("model_name"), "seeds": g("seeds"), "sign": g("sign") or "both",
+        "t_max_ratio": g("t_max_ratio"), "sweep_steps": g("sweep_steps"),
+        "k_decay": g("k_decay"), "control_repeats": g("control_repeats"),
+        "gen_max_tokens": g("gen_max_tokens"),
+        "flip_frac": g("flip_frac"), "flip_low": g("flip_low"),
+    }
 
 
 def read_progress(run_dir: Path) -> dict:
@@ -115,9 +152,9 @@ def read_progress(run_dir: Path) -> dict:
             out["cells"] = len(sync)
             viable = [c for c in sync if c.get("auto_collapse", 0) < c.get("n", 1)] or sync
             if viable:
-                b = max(viable, key=lambda c: c.get("cos", -9))
+                b = max(viable, key=lambda c: (c.get("flips", 0) / max(1, c.get("n", 1)), c.get("cos", -9)))
                 out["best"] = {"k": b["k"], "m": b["m"], "cos": b.get("cos"),
-                               "collapse": b.get("auto_collapse"), "n": b.get("n")}
+                               "flips": b.get("flips"), "collapse": b.get("auto_collapse"), "n": b.get("n")}
         except Exception:
             pass
     return out
@@ -186,10 +223,48 @@ def main():
     seeds_var = tk.StringVar(value=DEFAULT_SEEDS)
     ttk.Entry(row, textvariable=seeds_var, width=36).grid(row=0, column=3, padx=4)
 
+    # 載入已有設定：選一份 config → 把值灌進下面所有欄位；發射仍以當前欄位生成新的臨時 config
+    crow = ttk.Frame(frm); crow.pack(fill="x", pady=2)
+    ttk.Label(crow, text="已有設定").pack(side="left")
+    cfg_var = tk.StringVar()
+    cfg_box = ttk.Combobox(crow, textvariable=cfg_var, values=list_configs(),
+                           state="readonly", width=38)
+    cfg_box.pack(side="left", padx=4)
+
+    def do_load_config():
+        stem = cfg_var.get().strip()
+        if not stem:
+            return
+        try:
+            v = load_config(stem)
+        except Exception as e:
+            messagebox.showerror("載入失敗", str(e)); return
+        target.delete("1.0", "end"); target.insert("1.0", v["target"])
+        base.delete("1.0", "end"); base.insert("1.0", v["base"])
+        if v["model"]:
+            model_box.set(v["model"])
+        seeds_var.set(v["seeds"] or DEFAULT_SEEDS)
+        sign_var.set(v["sign"] or "both")
+
+        def put(var, val, default):
+            var.set(val if str(val).strip() not in ("", "None") else default)
+        put(t_max_ratio, v["t_max_ratio"], "0.6")
+        put(sweep_steps, v["sweep_steps"], "8")
+        put(k_decay, v["k_decay"], "0.75")
+        put(reps, v["control_repeats"], "5")
+        put(gen_tokens, v["gen_max_tokens"], "128")
+        put(flip_frac, v["flip_frac"], "")   # 空＝用 KmCosConfig 預設
+        put(flip_low, v["flip_low"], "")
+
+    ttk.Button(crow, text="載入到欄位", command=do_load_config).pack(side="left", padx=2)
+    ttk.Button(crow, text="重整清單",
+               command=lambda: cfg_box.configure(values=list_configs())).pack(side="left", padx=2)
+
     prow = ttk.Frame(frm); prow.pack(fill="x", pady=6)
     t_max_ratio = spin(prow, "t_max_ratio", 0.6, 0)
     sweep_steps = spin(prow, "sweep_steps", 8, 1)
     k_decay = spin(prow, "k_decay", 0.75, 2)
+    gen_tokens = spin(prow, "gen_tokens", 128, 3)
 
     prow2 = ttk.Frame(frm); prow2.pack(fill="x", pady=2)
     sign_var = tk.StringVar(value="both")
@@ -197,7 +272,10 @@ def main():
     ttk.Combobox(prow2, textvariable=sign_var, values=["both", "positive", "negative"],
                  state="readonly", width=9).grid(row=0, column=1, sticky="w")
     reps = spin(prow2, "隨機對照", 5, 1)
-    cos_low = spin(prow2, "cos_low（留空=自動；填了=絕對門檻）", "", 2, width=14)
+
+    prow3 = ttk.Frame(frm); prow3.pack(fill="x", pady=2)
+    flip_frac = spin(prow3, "flip_frac（翻轉邊界 0~1，留空=0.5中點）", "", 0, width=10)
+    flip_low = spin(prow3, "flip_low（翻轉率門檻，留空=1.0）", "", 1, width=10)
 
     status_var = tk.StringVar(value="（尚未發射）")
     ttk.Label(frm, textvariable=status_var, foreground="#036", font=("", 10)).pack(anchor="w", pady=(8, 2))
@@ -218,8 +296,8 @@ def main():
         try:
             write_run_files(stem, tgt, base.get("1.0", "end"), model_box.get(),
                             seeds_var.get(), float(t_max_ratio.get()), int(sweep_steps.get()),
-                            float(k_decay.get()), cos_low.get().strip(),
-                            sign_var.get(), int(reps.get()), 128)
+                            float(k_decay.get()), flip_frac.get().strip(), flip_low.get().strip(),
+                            sign_var.get(), int(reps.get()), int(gen_tokens.get()))
             launch("km_cos", stem)
         except Exception as e:
             messagebox.showerror("發射失敗", str(e)); return
@@ -241,9 +319,11 @@ def main():
                  f"bounds: {p['bounds']}"]
         if p["best"]:
             b = p["best"]
-            lines.append(f"目前最佳格: K={b['k']} M={b['m']}  cos={b['cos']}  "
-                         f"崩壞={b['collapse']}/{b['n']}")
-        lines.append("\n（cos 越高＝輸出越像目標人格；只顯示數字，不顯示題目/回答）")
+            n = b.get("n") or 1
+            rate = (b.get("flips") or 0) / n
+            lines.append(f"目前最佳格: K={b['k']} M={b['m']}  翻轉 {b.get('flips')}/{b['n']}"
+                         f"（率 {rate:.0%}）  cos={b['cos']}  崩壞={b['collapse']}/{b['n']}")
+        lines.append("\n（翻轉率＝輸出被誘發成目標人格的比例；cos＝平均差分；只顯示數字，不顯示題目/回答）")
         set_prog("\n".join(lines))
         status_var.set(f"{rd.name} — {p['status']}")
         if p["status"] not in ("completed", "failed"):

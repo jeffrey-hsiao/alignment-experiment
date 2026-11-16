@@ -300,10 +300,10 @@ class StepCriterion:
 
 
 class ThresholdCriterion(StepCriterion):
-    """數值型判準：純量訊號 ≥ low 即達標。拒絕翻轉率、對比相關性 cos、向量距離都走這條
-    —— 換訊號只換 key / 定標方式，步進邏輯不動。
+    """數值型判準：純量訊號 ≥ low 即達標。prune 拒絕翻轉率、km_cos 句向量差分翻轉率都走
+    這條 —— 換訊號只換 key / 定標方式，步進邏輯不動。
         as_rate=True  → value = cell[key] / n（比例，如翻轉率 flips/n，門檻 flip_low）
-        as_rate=False → value = cell[key]（絕對量，如 cos，門檻 cos_low）
+        as_rate=False → value = cell[key]（絕對量，直接拿 cell[key] 比門檻；目前無呼叫端用）
     """
 
     def __init__(self, key: str, low: float, *, as_rate: bool = False, label: str | None = None):
@@ -338,8 +338,8 @@ def run_sweep(evaluate, total: int, cfg: dict, state: dict, save, *,
     T 超過上界即終止。崩壞不參與步進（由各模式記錄、人工覆核）。
 
     跳格判準 criterion 可替換（StepCriterion 子類，各模式注入）：
-      prune（拒絕）  ThresholdCriterion('flips', flip_low, as_rate=True)   翻轉率 flips/n
-      km_cos（誘發） ThresholdCriterion('cos',   cos_low,  as_rate=False)  對比相關性 cos
+      prune（拒絕）  ThresholdCriterion('flips', flip_low, as_rate=True)   拒絕翻轉率 flips/n
+      km_cos（誘發） ThresholdCriterion('flips', flip_low, as_rate=True)   句向量差分逐筆翻轉率
     evaluate(kind,k,m)->cell、state、save() 由各模式注入。
     """
     sweep_steps = max(1.0, float(cfg["sweep_steps"]))
