@@ -260,6 +260,15 @@ def write_prune_checkpoint(ckpt_dir: str | Path, base_model: str,
     return path
 
 
+def apply_masks(model, pinfo: dict, verbose: bool = True) -> tuple[int, int]:
+    """套用 prune/packed checkpoint 的神經元遮罩：先裁減再取負。回傳 (裁減數, 翻轉數)。
+    reversed 以 .get 容錯——舊 checkpoint 可能沒有這個欄位。供 model_loader /
+    neuron_probe 三個載入點共用，避免各寫一份。"""
+    n = apply_prune_mask(model, pinfo["neurons"], verbose=verbose)
+    r = apply_reverse_mask(model, pinfo.get("reversed", []), verbose=verbose)
+    return n, r
+
+
 def read_prune_checkpoint(ckpt_dir: str | Path) -> dict | None:
     """讀取 pruned_neurons.json；不是 prune checkpoint 則回傳 None。"""
     path = Path(ckpt_dir) / PRUNE_FILE

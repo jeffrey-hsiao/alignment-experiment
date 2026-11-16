@@ -49,7 +49,7 @@ MLOPS_DIR = Path(__file__).parent
 sys.path.insert(0, str(MLOPS_DIR))
 
 from prune_utils import (  # noqa: E402  共用，避免與 prune 兩邊各寫一份
-    find_mlp_down_projs, apply_prune_mask, apply_reverse_mask, read_prune_checkpoint)
+    find_mlp_down_projs, apply_masks, read_prune_checkpoint)
 # 提示詞組裝收斂到 chat_prompt（單一來源）。DEFAULT_SYSTEM 由此再匯出，
 # 既有 `from neuron_probe import DEFAULT_SYSTEM` 仍可用，語意不變。
 from chat_prompt import DEFAULT_SYSTEM, render_chat  # noqa: E402,F401
@@ -444,8 +444,7 @@ def load_target_model(model_id: str | None, checkpoint: str, model_name: str):
             model = AutoModelForCausalLM.from_pretrained(
                 base_ref, revision=rev, torch_dtype=torch.bfloat16, device_map=_dev,
                 attn_implementation="eager")
-            apply_prune_mask(model, pinfo["neurons"], verbose=False)
-            apply_reverse_mask(model, pinfo["reversed"], verbose=False)
+            apply_masks(model, pinfo, verbose=False)
         else:
             load_ref = str(_local) if _local.exists() else model_name
             rev = None if _local.exists() else resolve_revision(model_name)

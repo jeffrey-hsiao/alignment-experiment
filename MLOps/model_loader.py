@@ -8,7 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
 from model_registry import EXPERIMENTS_DIR, ROOT, load_model_registry, read_summary, resolve_revision
-from prune_utils import apply_prune_mask, apply_reverse_mask, read_prune_checkpoint
+from prune_utils import apply_masks, read_prune_checkpoint
 
 # 從配置讀取，或使用預設
 try:
@@ -100,8 +100,7 @@ def _load_packed_model(model_id: str, info: dict):
     except Exception as e:
         print(f"錯誤：無法載入 packed 的 base 模型 {base}：{e}")
         return None, None
-    n = apply_prune_mask(model, pinfo["neurons"])
-    r = apply_reverse_mask(model, pinfo["reversed"])
+    n, r = apply_masks(model, pinfo)
     print(f"已套用 packed 遮罩：裁減 {n}、翻轉 {r}（base {base}）")
     return model, tokenizer
 
@@ -166,8 +165,7 @@ def _load_trained_model(run_id: str, checkpoint: str = "final"):
     # 與 LoRA 的「base + adapter」同一個原則，見 prune_utils。
     prune_info = read_prune_checkpoint(ckpt_dir)
     if prune_info is not None:
-        n = apply_prune_mask(model, prune_info["neurons"])
-        r = apply_reverse_mask(model, prune_info.get("reversed", []))
+        n, r = apply_masks(model, prune_info)
         print(f"已套用 prune checkpoint：裁減 {n} 個、翻轉 {r} 個神經元")
         model.eval()
         return model, tokenizer
