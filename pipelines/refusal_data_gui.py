@@ -32,7 +32,8 @@ class App:
         self.entries: list[dict] = load(self.path)
         self.dirty = False
         self.selected_id: str | None = None
-        self.model_map: dict[str, str] = {}   # 選定模型的 id→真實分類；未選/未掃→空
+        self.model_map: dict[str, str] = {}    # 模型A 的 id→真實分類；未選/未掃→空
+        self.model_map2: dict[str, str] = {}   # 模型B（對比用）的 id→真實分類
         root.title("拒絕資料集編輯器")
         root.geometry("1000x640")
         self._build()
@@ -50,28 +51,36 @@ class App:
         self.path_var = tk.StringVar()
         ttk.Label(top, textvariable=self.path_var).pack(side="left", padx=10)
 
-        # 模型分類依據自成一整列：選一個模型，索引表會多顯示該模型對每題的真實分類
-        # （沒掃過=空）。獨立一列，不管視窗寬度/路徑長度/DPI 縮放都一定看得到、選得到。
+        # 模型分類依據自成一整列：可選兩個模型（A/B）做對比，索引表各顯示一欄真實分類，
+        # 下方統計顯示兩模型差異（例如 A 拒絕但 B 順從＝B 比 A 多越獄了哪些題）。
+        # 獨立一列，不管視窗寬度/路徑長度/DPI 縮放都一定看得到、選得到。
+        opts = ["(未選)"] + available_models()
         top2 = ttk.Frame(self.root, padding=(6, 0, 6, 6))
         top2.pack(fill="x")
-        ttk.Label(top2, text="模型分類依據：").pack(side="left", padx=(0, 2))
-        self.model_box = ttk.Combobox(top2, state="readonly", width=36,
-                                      values=["(未選)"] + available_models())
+        ttk.Label(top2, text="模型A：").pack(side="left", padx=(0, 2))
+        self.model_box = ttk.Combobox(top2, state="readonly", width=34, values=opts,
+                                      postcommand=self._refresh_model_options)
         self.model_box.set("(未選)")
         self.model_box.pack(side="left")
         self.model_box.bind("<<ComboboxSelected>>", self._on_model_change)
-        ttk.Label(top2, text="（選模型後，右表「模型分類」欄顯示該模型實跑的 refused/complied）",
+        ttk.Label(top2, text="　模型B(對比)：").pack(side="left", padx=(0, 2))
+        self.model_box2 = ttk.Combobox(top2, state="readonly", width=34, values=opts,
+                                       postcommand=self._refresh_model_options)
+        self.model_box2.set("(未選)")
+        self.model_box2.pack(side="left")
+        self.model_box2.bind("<<ComboboxSelected>>", self._on_model_change)
+        ttk.Label(top2, text="（右表 A分類/B分類 欄顯示各模型實跑的 refused/complied）",
                   foreground="#666").pack(side="left", padx=8)
 
         mid = ttk.Panedwindow(self.root, orient="horizontal")
         mid.pack(fill="both", expand=True, padx=6)
 
         left = ttk.Frame(mid)
-        cols = ("id", "group", "model_cls", "domain", "text")
-        headers = {"id": "id", "group": "預期group", "model_cls": "模型分類",
-                   "domain": "domain", "text": "text"}
+        cols = ("id", "group", "model_cls", "model_cls2", "domain", "text")
+        headers = {"id": "id", "group": "預期group", "model_cls": "A分類",
+                   "model_cls2": "B分類", "domain": "domain", "text": "text"}
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
-        for c, w in zip(cols, (80, 80, 90, 100, 380)):
+        for c, w in zip(cols, (80, 80, 80, 80, 100, 330)):
             self.tree.heading(c, text=headers[c])
             self.tree.column(c, width=w, anchor="w")
         vsb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
@@ -103,6 +112,9 @@ class App:
         self.stats_var = tk.StringVar()
         ttk.Label(bottom, textvariable=self.stats_var, justify="left",
                   foreground="#333").pack(anchor="w")
+        self.modelstats_var = tk.StringVar()
+        ttk.Label(bottom, textvariable=self.modelstats_var, justify="left",
+                  foreground="#1a5").pack(anchor="w")
 
     def _add_entry(self, parent, label, default):
         ttk.Label(parent, text=label).pack(anchor="w")
@@ -123,6 +135,7 @@ class App:
             self.tree.insert("", "end", iid=e["id"],
                              values=(e["id"], e.get("group", ""),
                                      self.model_map.get(e["id"], ""),
+                                     self.model_map2.get(e["id"], ""),
                                      e.get("domain", ""),
                                      (e.get("text", "") or "").replace("\n", " ")[:80]))
         self.path_var.set(f"檔案：{self.path}　（{len(self.entries)} 筆{'　*未存檔' if self.dirty else ''}）")
@@ -167,10 +180,38 @@ class App:
         if e:
             self._fill_form(e)
 
+    def _refresh_model_options(self):
+        """下拉展開前重讀 registry，剛 pack/regroup 的模型不必重開 GUI 就會出現。"""
+        opts = ["(未選)"] + available_models()
+        self.model_box["values"] = opts
+        self.model_box2["values"] = opts
+
     def _on_model_change(self, _evt=None):
-        name = self.model_box.get()
-        self.model_map = {} if name in ("", "(未選)") else model_group_map(name)
+        a, b = self.model_box.get(), self.model_box2.get()
+        self.model_map  = {} if a in ("", "(未選)") else model_group_map(a)
+        self.model_map2 = {} if b in ("", "(未選)") else model_group_map(b)
         self._refresh_tree()
+        self._refresh_model_stats()
+
+    def _refresh_model_stats(self):
+        """顯示 A/B 兩模型的真實分類統計與差異（B 相對 A 多越獄/回退了哪些題）。"""
+        a, b = self.model_box.get(), self.model_box2.get()
+        parts = []
+        if self.model_map:
+            ra = sum(1 for v in self.model_map.values() if v == "refused")
+            parts.append(f"A[{a}]：拒絕 {ra} / 順從 {len(self.model_map) - ra}（{len(self.model_map)} 題有分類）")
+        if self.model_map2:
+            rb = sum(1 for v in self.model_map2.values() if v == "refused")
+            parts.append(f"B[{b}]：拒絕 {rb} / 順從 {len(self.model_map2) - rb}（{len(self.model_map2)} 題有分類）")
+        if self.model_map and self.model_map2:
+            common = set(self.model_map) & set(self.model_map2)
+            a_ref_b_comp = sum(1 for i in common if self.model_map[i] == "refused" and self.model_map2[i] == "complied")
+            a_comp_b_ref = sum(1 for i in common if self.model_map[i] == "complied" and self.model_map2[i] == "refused")
+            both_ref     = sum(1 for i in common if self.model_map[i] == "refused" and self.model_map2[i] == "refused")
+            both_comp    = sum(1 for i in common if self.model_map[i] == "complied" and self.model_map2[i] == "complied")
+            parts.append(f"對比（{len(common)} 題共有）：A拒→B順(B多越獄) {a_ref_b_comp}　"
+                         f"A順→B拒(B回退) {a_comp_b_ref}　皆拒 {both_ref}　皆順 {both_comp}")
+        self.modelstats_var.set("\n".join(parts))
 
     def _add(self):
         f = self._form()

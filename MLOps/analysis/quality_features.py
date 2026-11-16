@@ -8,7 +8,6 @@
 import json
 import math
 import sys
-from collections import Counter
 from pathlib import Path
 
 import torch
@@ -18,10 +17,7 @@ from neuron_probe import DEFAULT_MODEL_NAME, DEFAULT_SYSTEM, load_target_model  
 from chat_prompt import render_chat  # noqa: E402
 
 
-def repeated(text: str, n: int = 6) -> float:
-    if len(text) < n * 2:
-        return 0.0
-    return max(Counter(text[i:i + n] for i in range(len(text) - n + 1)).values()) * n / len(text)
+from text_metrics import repeated  # noqa: E402,F401  共用定義（單一真相，再 export 給既有呼叫端）
 
 
 def nll(model, tokenizer, prompt: str, response: str) -> dict:

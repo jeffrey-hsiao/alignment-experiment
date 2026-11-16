@@ -7,7 +7,7 @@ from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-from model_registry import EXPERIMENTS_DIR, load_model_registry, read_summary
+from model_registry import EXPERIMENTS_DIR, ROOT, load_model_registry, read_summary, resolve_revision
 from prune_utils import apply_prune_mask, apply_reverse_mask, read_prune_checkpoint
 
 # 從配置讀取，或使用預設
@@ -65,20 +65,59 @@ def load_model(model_id: str, checkpoint: str = "final"):
     if model_id in base_models:
         return _load_base_model(model_id, base_models[model_id])
 
+    # 包裝模型（packed）：只存平坦遮罩，載 HF base 再套遮罩（compose）
+    packed = {m["id"]: m for m in registry.get("packed", [])}
+    if model_id in packed:
+        return _load_packed_model(model_id, packed[model_id])
+
     # 否則按訓練模型處理
     return _load_trained_model(model_id, checkpoint)
+
+
+def _load_packed_model(model_id: str, info: dict):
+    """packed 模型：讀 models/packed/<id>/pruned_neurons.json → 載 HF base → 套歸零/取負遮罩。"""
+    p = Path(info["name"])
+    pdir = p if p.is_absolute() else ROOT / p
+    pinfo = read_prune_checkpoint(pdir)
+    if pinfo is None:
+        print(f"錯誤：packed 目錄沒有 pruned_neurons.json：{pdir}")
+        return None, None
+    base = pinfo["base_model"]
+    bp = ROOT / base
+    is_local = bp.exists()
+    base_ref = str(bp) if is_local else base
+    rev = None if is_local else resolve_revision(base)   # 本地目錄不傳 revision
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(base_ref, revision=rev)
+        tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(
+            base_ref,
+            revision=rev,
+            torch_dtype=MODEL_LOAD_CONFIG.get("torch_dtype", torch.bfloat16),
+            device_map=MODEL_LOAD_CONFIG.get("device_map", "auto"),
+            attn_implementation=MODEL_LOAD_CONFIG.get("attn_implementation", "eager"),
+        )
+    except Exception as e:
+        print(f"錯誤：無法載入 packed 的 base 模型 {base}：{e}")
+        return None, None
+    n = apply_prune_mask(model, pinfo["neurons"])
+    r = apply_reverse_mask(model, pinfo["reversed"])
+    print(f"已套用 packed 遮罩：裁減 {n}、翻轉 {r}（base {base}）")
+    return model, tokenizer
 
 
 def _load_base_model(model_id: str, model_info: dict):
     """載入基礎模型"""
     model_name = model_info["name"]
+    rev = model_info.get("revision") or None   # registry 釘死的版本（無則走 main）
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, revision=rev)
         tokenizer.pad_token = tokenizer.eos_token
 
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
+            revision=rev,
             torch_dtype=MODEL_LOAD_CONFIG.get("torch_dtype", torch.bfloat16),
             device_map=MODEL_LOAD_CONFIG.get("device_map", "auto"),
             attn_implementation=MODEL_LOAD_CONFIG.get("attn_implementation", "eager"),
@@ -100,10 +139,11 @@ def _load_trained_model(run_id: str, checkpoint: str = "final"):
 
     # 從 run_summary.json 讀取基礎模型
     base_model = _get_base_model_from_summary(exp_dir)
+    rev = resolve_revision(base_model)   # 若該 base 在 registry 釘了版本就沿用（否則 main）
 
     # 載入 tokenizer
     try:
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
+        tokenizer = AutoTokenizer.from_pretrained(base_model, revision=rev)
         tokenizer.pad_token = tokenizer.eos_token
     except Exception as e:
         print(f"錯誤：無法載入 tokenizer 來自 {base_model}：{e}")
@@ -113,6 +153,7 @@ def _load_trained_model(run_id: str, checkpoint: str = "final"):
     try:
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
+            revision=rev,
             torch_dtype=MODEL_LOAD_CONFIG.get("torch_dtype", torch.bfloat16),
             device_map=MODEL_LOAD_CONFIG.get("device_map", "auto"),
             attn_implementation=MODEL_LOAD_CONFIG.get("attn_implementation", "eager"),

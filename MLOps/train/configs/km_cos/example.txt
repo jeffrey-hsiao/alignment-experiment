@@ -2,7 +2,8 @@
 # 跑法：python run.py train km_cos --config example
 #
 # target_system = 要誘發的人格；base_system 留空＝用模型預設身分作對照。
-# seeds 用隨附的中性題；start_k/end_m 留 0 → 由 KmCosRunner._bounds 的保守界派生。
+# seeds 用隨附的中性題。搜尋走 gen-2 單調 T/K 掃描（run_sweep），掃描參數
+# （t_max_ratio / sweep_steps / k_decay / cos_low）不填則用 KmCosConfig 預設。
 
 model_name      = Qwen/Qwen2.5-1.5B-Instruct
 seeds           = pipelines/data/km_cos_prompts.jsonl

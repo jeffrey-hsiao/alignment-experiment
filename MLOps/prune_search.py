@@ -272,9 +272,146 @@ def run_fine(evaluate, bounds: dict, cfg: dict) -> None:
         k, m = following
 
 
+# ── T 跳格判準（可替換）──────────────────────────────────────────────────────
+
+class StepCriterion:
+    """run_sweep 的「T 跳格判準」：把一格的指標縮成純量訊號後，判定該格效果是否達標。
+    達標 → run_sweep 衰減 K（降隱性比例，T 不變）；未達標 → 放大 T。換判準只換這個
+    物件，步進幾何（T 單調增、K 等比放大／整數衰減）完全不動，不同訊號沿用同一套用詞：
+        label          訊號名（印出 & 存進 state["v2"]["signal"]）
+        value(cell)    這一格的純量訊號
+        reached(cell)  這一格是否達標（→ 衰減 K；否則放大 T）
+        describe()     掃描開頭印出的門檻說明
+
+    要換訊號（例如 reranker cos → 向量距離）：由各模式把該格的純量算進 cell，再換成對應
+    的子類實例傳進 run_sweep。run_sweep 本身不認得訊號怎麼算，只認得 reached()。
+    """
+    label = "signal"
+    low = None   # 數值型判準才有；非數值型可為 None
+
+    def value(self, cell: dict) -> float:
+        raise NotImplementedError
+
+    def reached(self, cell: dict) -> bool:
+        raise NotImplementedError
+
+    def describe(self) -> str:
+        return self.label
+
+
+class ThresholdCriterion(StepCriterion):
+    """數值型判準：純量訊號 ≥ low 即達標。拒絕翻轉率、對比相關性 cos、向量距離都走這條
+    —— 換訊號只換 key / 定標方式，步進邏輯不動。
+        as_rate=True  → value = cell[key] / n（比例，如翻轉率 flips/n，門檻 flip_low）
+        as_rate=False → value = cell[key]（絕對量，如 cos，門檻 cos_low）
+    """
+
+    def __init__(self, key: str, low: float, *, as_rate: bool = False, label: str | None = None):
+        self.key = key
+        self.low = float(low)
+        self.as_rate = as_rate
+        self.label = label or key
+
+    def value(self, cell: dict) -> float:
+        v = cell[self.key]
+        return v / max(1, int(cell.get("n", 1))) if self.as_rate else float(v)
+
+    def reached(self, cell: dict) -> bool:
+        return self.value(cell) >= self.low
+
+    def describe(self) -> str:
+        return f"{self.label}{'率' if self.as_rate else '值'}門檻={self.low}"
+
+
+def run_sweep(evaluate, total: int, cfg: dict, state: dict, save, *,
+              criterion: StepCriterion, label: str = "sweep") -> dict:
+    """gen-2 單調 T/K 掃描驅動器：prune_v2 的搜尋策略,prune_v2 與 km_cos 共用這同一份。
+
+    （唯一實作：prune_v2_search.PruneV2Runner.train 與 prune_km_cos.KmCosRunner.train
+    都委派到這裡，差別只在傳入的 criterion（跳格判準）。改這裡會同時影響兩者，包含已
+    定稿的 prune_v2 實驗——動它前先確認 prune_v2 行為不變。）
+
+    T=K+M 只增不減（每次 +step，step=上界/sweep_steps，上界=t_max_ratio×total），K 隨
+    criterion 達標與否步進：
+      criterion.reached(cell)=True → K ×= k_decay（整數衰減、降隱性比例，T 不變；K 到底則放大 T）
+      reached=False                → 放大 T（K 等比放大，維持隱性比例 K/T）
+    T 超過上界即終止。崩壞不參與步進（由各模式記錄、人工覆核）。
+
+    跳格判準 criterion 可替換（StepCriterion 子類，各模式注入）：
+      prune（拒絕）  ThresholdCriterion('flips', flip_low, as_rate=True)   翻轉率 flips/n
+      km_cos（誘發） ThresholdCriterion('cos',   cos_low,  as_rate=False)  對比相關性 cos
+    evaluate(kind,k,m)->cell、state、save() 由各模式注入。
+    """
+    sweep_steps = max(1.0, float(cfg["sweep_steps"]))
+    t_max_ratio = min(1.0, max(1e-6, float(cfg.get("t_max_ratio", 1.0) or 1.0)))
+    t_max = min(total, max(2, round(t_max_ratio * total)))   # 搜尋上界（含）
+    step = max(1, round(t_max / sweep_steps))                # 步長基於上界切
+    T = int(cfg.get("t_start") or 0) or step
+    T = min(T, t_max)   # 防呆：t_start 若誤設得比上界大，至少跑到上界這格，不要 while 空轉零格
+    decay = float(cfg["k_decay"])
+    K = max(1, min(T - 1, round(float(cfg["k_ratio_start"]) * T)))   # 起始 K
+
+    state["v2"] = {"total": total, "t_max": t_max, "t_max_ratio": t_max_ratio,
+                   "step": step, "sweep_steps": sweep_steps,
+                   "k_ratio_start": float(cfg["k_ratio_start"]),
+                   "k_decay": decay, "low": getattr(criterion, "low", None),
+                   "signal": criterion.label}
+    state["bounds"] = {"source": label, "start_k": min(T, total), "end_m": t_max}
+    save()
+    print(f"{label} 掃描：總神經元 {total}，上界 {t_max}（{t_max_ratio:.0%}），"
+          f"步長 {step}（上界/{sweep_steps:g}），起始 T={T} K={K}，decay={decay}，"
+          f"{criterion.describe()}", flush=True)
+
+    def grow_T():
+        """放大 T 一步，K 等比例放大以維持隱性比例 K/T。"""
+        nonlocal T, K
+        nT = T + step
+        K = max(1, round(K * nT / T))
+        T = nT
+
+    while T <= t_max:
+        K = max(1, min(T - 1, K))
+        cell = evaluate("sync", K, T - K)   # 內建快取 → resume 直接命中已完成格
+        if criterion.reached(cell):
+            nK = max(1, round(K * decay))
+            if nK < K:
+                K = nK                  # 達標 → 衰減 K（降隱性比例），T 不變
+            else:
+                grow_T()                # K 已到底 → 改放大 T
+        else:
+            grow_T()                    # 未達標 → 放大 T（K 等比放大，維持比例）
+        save()
+    return state["v2"]
+
+
 # ── 搜尋 ──────────────────────────────────────────────────────────────────────
 
-class KmSearchRunner:
+class CellRunner:
+    """km_search / km_cos 兩個 runner 的共用骨架：狀態存檔、格子快取查找、載入目標模型、
+    移除 callback。只依賴 self.state / self.state_path / self.callbacks / self.cfg（兩個子類
+    都具備），抽出來避免兩邊各抄一份而漂移。"""
+
+    def remove_callback(self, cls):
+        self.callbacks = [c for c in self.callbacks if not isinstance(c, cls)]
+
+    def _save_state(self) -> None:
+        tmp = self.state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.state_path)
+
+    def _find(self, kind: str, k: int, m: int, repeat: int = 0) -> dict | None:
+        for cell in self.state["cells"]:
+            if (cell["kind"], cell["k"], cell["m"], cell["repeat"]) == (kind, k, m, repeat):
+                return cell
+        return None
+
+    def _load_model(self):
+        model, tokenizer = load_target_model(None, "final", self.cfg["model_name"])
+        model.config.use_cache = True
+        return model, tokenizer
+
+
+class KmSearchRunner(CellRunner):
     """滿足 train()/remove_callback() 介面，觸發完整 callback 生命週期。"""
 
     def __init__(self, trainer, callbacks, resolve):
@@ -297,28 +434,9 @@ class KmSearchRunner:
         self.rerank: tuple | None = None
         self.tracker = None
 
-    def remove_callback(self, cls):
-        self.callbacks = [c for c in self.callbacks if not isinstance(c, cls)]
-
-    # ── 狀態 ──────────────────────────────────────────────────────────────────
-
-    def _save_state(self) -> None:
-        temp = self.state_path.with_suffix(".tmp")
-        temp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(self.state_path)
-
-    def _find(self, kind: str, k: int, m: int, repeat: int = 0) -> dict | None:
-        for cell in self.state["cells"]:
-            if (cell["kind"], cell["k"], cell["m"], cell["repeat"]) == (kind, k, m, repeat):
-                return cell
-        return None
+    # remove_callback / _save_state / _find / _load_model 繼承自 CellRunner
 
     # ── 模型與判定 ────────────────────────────────────────────────────────────
-
-    def _load_model(self):
-        model, tokenizer = load_target_model(None, "final", self.cfg["model_name"])
-        model.config.use_cache = True
-        return model, tokenizer
 
     def _generate(self, neurons: list, prompts: list[dict],
                   reversed_neurons: list | None = None) -> list[dict]:

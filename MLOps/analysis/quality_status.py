@@ -17,10 +17,7 @@ rows = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8")]
 langs = {r["id"]: r["lang"] for r in map(json.loads, open(sys.argv[2], encoding="utf-8"))}
 
 
-def repeated(text: str) -> float:
-    if len(text) < 16:
-        return 0.0
-    return max(Counter(text[i:i + 6] for i in range(len(text) - 5)).values()) * 6 / len(text)
+from text_metrics import repeated  # noqa: E402  共用定義（取代原本門檻 16 的在地複本）
 
 
 def drifted(row: dict) -> bool:

@@ -5,10 +5,20 @@
 # 可調欄位見 KmCosConfig.DEFAULTS，常用：
 #   target_system / target_system_file  要誘發的人格
 #   base_system   / base_system_file    對照身分（留空＝模型預設）
-#   seeds        中性題種子（預設 pipelines/data/km_cos_prompts.jsonl）
+#   seeds        人格誘發種子（預設 data/seeds/km_cos_persona_prompts.jsonl）
 #   sign         both | positive | negative
-#   start_k / end_m   留 0 由保守界派生；指定則固定範圍
 #   control_repeats   隨機對照次數
+#
+# 搜尋改用 prune_v2 的 gen-2 單調 T/K 掃描（run_sweep），數值同步自 prune_v2 參數
+# 最佳化（t_max_ratio=0.6 / sweep_steps=8 / k_decay=0.75）。步進訊號是對比相關性 cos
+# ＝e5-small 句向量差分 cos(對 target 質心)−cos(對 base 質心)，不是翻轉率：
+#   t_max_ratio   搜尋上界占總神經元比例
+#   sweep_steps   上界切幾大步（step = 上界 / sweep_steps）
+#   k_ratio_start 起始 K 占比；k_decay 衰減率
+#   cos_low_frac  進格門檻在 cos 基準間的位置：cos_low = cos_base + frac×(cos_target−cos_base)。
+#                 門檻由 rank 時兩組 system 條件的輸出自動定標（見 prune_km_cos._prepare）。
+#                 預設 0.5＝落在兩基準中點（輸出偏向哪個質心）；大→靠 target 較嚴、取格少，
+#                 小→靠 base 較寬、取格多。要定死用 cos_low=<絕對值>。
 
 # 預設關閉：run 結尾的隨機對照格（需要時在具名 config 裡設定次數）
 control_repeats = 0

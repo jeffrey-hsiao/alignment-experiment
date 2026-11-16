@@ -3,32 +3,62 @@
     {
       "id": "qwen-2.5-1.5b-instruct",
       "name": "Qwen/Qwen2.5-1.5B-Instruct",
+      "revision": "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
       "description": "原始未微調的Qwen 2.5 1.5B指令模型"
     },
     {
       "id": "qwen-2.5-0.5b-instruct",
       "name": "Qwen/Qwen2.5-0.5B-Instruct",
+      "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
       "description": "原始未微調的Qwen 2.5 0.5B指令模型（同家族更小尺寸對照）"
     },
     {
       "id": "smollm2-1.7b-instruct",
       "name": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+      "revision": "31b70e2e869a7173562077fd711b654946d38674",
       "description": "跨家族對照：SmolLM2 1.7B（Llama 架構、ChatML、Apache-2.0）"
     },
     {
       "id": "phi-3.5-mini-instruct",
       "name": "microsoft/Phi-3.5-mini-instruct",
+      "revision": "2fe192450127e6a83f7441aef6e3ca586c338b77",
       "description": "跨家族對照：Phi-3.5-mini 3.8B（Phi3 架構、fused gate_up、MIT）"
     },
     {
       "id": "qwen-2.5-3b-instruct",
       "name": "Qwen/Qwen2.5-3B-Instruct",
+      "revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
       "description": "同家族大尺寸對照：Qwen 2.5 3B（排除模型大小變因，對比同尺寸的 Phi-3.5）"
     },
     {
       "id": "qwen-2.5-7b-instruct",
       "name": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
       "description": "同家族尺寸階梯頂點：Qwen 2.5 7B（明確大於 Phi-3.5，釘死「太大導致失效」假說）"
+    }
+  ],
+  "packed": [
+    {
+      "id": "phi-3.5-mini-instruct_006__checkpoint-32",
+      "name": "models/packed/phi-3.5-mini-instruct_006__checkpoint-32",
+      "source_run": "phi-3.5-mini-instruct_006",
+      "source_checkpoint": "checkpoint-32",
+      "base_model": "microsoft/phi-3.5-mini-instruct",
+      "zeroed": 1080,
+      "reversed": 6540,
+      "recursive": false,
+      "created_at": "2026-11-15T03:07:16"
+    },
+    {
+      "id": "phi-3.5-mini-instruct_006_001__checkpoint-40",
+      "name": "models/packed/phi-3.5-mini-instruct_006_001__checkpoint-40",
+      "source_run": "phi-3.5-mini-instruct_006_001",
+      "source_checkpoint": "checkpoint-40",
+      "base_model": "microsoft/phi-3.5-mini-instruct",
+      "zeroed": 1080,
+      "reversed": 12614,
+      "recursive": true,
+      "created_at": "2026-11-15T03:07:16"
     }
   ]
 }

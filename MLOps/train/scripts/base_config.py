@@ -246,7 +246,8 @@ class PruneV2Config(PruneConfig):
     DEFAULTS = {
         **PruneConfig.DEFAULTS,
         "mode":              "prune_v2",   # 僅標示；train_prune_v2 直接走 PruneV2Runner
-        "sweep_steps":       10,    # 掃完整個模型要幾個大步；step = 總神經元數 / sweep_steps
+        "t_max_ratio":       1.0,   # 搜尋上界 = 此比例 × 總神經元數（1.0=整個模型）。過往最佳格都在 ≤20%，設 0.3~0.4 可把解析度集中在低 T
+        "sweep_steps":       10,    # 把 [0, 上界] 切成幾個大步；step = (t_max_ratio×總神經元) / sweep_steps
         "t_start":           0,     # 起始 T；0 → 用一個 step
         "k_ratio_start":     0.5,   # 起始 K 占比：初始 K = round(k_ratio_start × 起始 T)
         "k_decay":           0.9,   # 翻轉夠高時 K ×= 此值（直接乘在 K 上，整數、不會浮點消失）
@@ -258,8 +259,8 @@ class PruneV2Config(PruneConfig):
 
 class KmCosConfig(BaseConfig):
     """km_cos（cosplay 行為編輯）：與 prune 並列的方法，但資料與指標都不同——
-    吃「單句中性題 + 一對對比 system prompt」，用對比相關性（reranker）選最佳格，
-    而非 prune 的有害/無害成對題 + 拒絕判定。搜尋引擎（run_coarse/run_fine）與
+    吃「單句人格誘發題 + 一對對比 system prompt」，用對比相關性 cos（e5-small 句向量差分）
+    選最佳格，而非 prune 的有害/無害成對題 + 拒絕判定。搜尋引擎（run_sweep）與
     checkpoint 格式跟 prune 共用，執行邏輯見 prune_km_cos.KmCosRunner。
 
     NEEDS_DATA=False：種子來自 seeds（中性題），不吃 data/unsafe+normal。
@@ -273,8 +274,11 @@ class KmCosConfig(BaseConfig):
         "objective":      "normal",
         "model_name":     "Qwen/Qwen2.5-1.5B-Instruct",
         "mode":           "km_cos",
-        # 中性題種子：每行單句 {id, text, group, domain, lang}，不是有害/無害成對
-        "seeds":          "data/seeds/km_cos_prompts.jsonl",
+        # 人格誘發種子：每行單句 {id, text, group, domain, lang}，不是有害/無害成對。
+        # 預設用 km_cos_persona_prompts.jsonl——全是「會讓人格表現出來」的題（自我／喜好／
+        # 厭惡／情感／日常／關係／立場／情境反應）。刻意不含中性知識/任務題，因為那些題
+        # target vs base 的激活幾乎無差，只會稀釋排序訊號、壓低 cos 基準。
+        "seeds":          "data/seeds/km_cos_persona_prompts.jsonl",
         # 對比 system prompt：target=要誘發的人格；base 留空＝用模型預設身分作對照
         # （短的用 inline，長的用 *_file 指向檔案路徑）
         "target_system":      "",
@@ -289,13 +293,24 @@ class KmCosConfig(BaseConfig):
         "tune_ratio":     0.2,
         "n_steps":        8,
         "split_seed":     0,
-        # K、M 搜尋（與 km_search 共用 run_coarse/run_fine）；留 0 由保守界派生
-        "start_k":        0,
-        "end_m":          0,
-        "k_floor":        0,
-        "km_up":          1.25,
-        "k_down":         0.8,
-        "collapse_ratio": 0.10,
+        # gen-2 單調 T/K 掃描（與 prune_v2 共用 run_sweep）。prune 走拒絕翻轉率，km_cos
+        # 沒有翻轉 → 步進訊號改用對比相關性 cos＝e5-small 句向量差分 cos(對 target 質心)−
+        # cos(對 base 質心)（取代早期 reranker 版，後者 8 token 會塌/反轉）。下列數值同步
+        # 自 prune_v2 參數最佳化：t_max_ratio=0.6 / sweep_steps=8 / k_decay=0.75。
+        "t_max_ratio":    0.6,    # 搜尋上界 = 此比例 × 總神經元
+        "sweep_steps":    8,      # 把 [0, 上界] 切成幾大步；step = 上界 / sweep_steps
+        "t_start":        0,      # 起始 T；0 → 用一個 step
+        "k_ratio_start":  0.5,    # 起始 K 占比：初始 K = round(k_ratio_start × 起始 T)
+        "k_decay":        0.75,   # cos 夠高時 K ×= 此值（整數衰減、不會浮點消失）
+        # 進格門檻 cos_low。兩種定法，優先吃手動覆寫：
+        #  (a) 手動覆寫：cos_low 填了「就直接當絕對門檻」，完全略過自動定標。留空（""）才走 (b)。
+        "cos_low":        "",
+        #  (b) 自動定標：cos＝句向量差分，對稱且有界（cosine∈[-1,1]）。用 rank 時兩組 system
+        #      條件的輸出算基準（base cos_base≈偏負 / target cos_target≈偏正），
+        #      門檻 = cos_base + cos_low_frac × (cos_target − cos_base)。
+        #      預設 0.5＝落在兩基準中點（乾淨訊號的自然分界：輸出偏向哪個質心）；
+        #      大→靠 target（取格少、較嚴）；小→靠 base（取格多、較寬）。
+        "cos_low_frac":   0.5,
         "control_repeats": 5,
         # 崩壞偵測門檻（同 km_search，來自 analysis/quality_calibrate.py）
         "repeat_bad":     0.1442,

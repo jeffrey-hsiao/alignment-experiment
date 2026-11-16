@@ -48,7 +48,8 @@ import torch
 MLOPS_DIR = Path(__file__).parent
 sys.path.insert(0, str(MLOPS_DIR))
 
-from prune_utils import find_mlp_down_projs  # noqa: E402  共用，避免與 prune 兩邊各寫一份
+from prune_utils import (  # noqa: E402  共用，避免與 prune 兩邊各寫一份
+    find_mlp_down_projs, apply_prune_mask, apply_reverse_mask, read_prune_checkpoint)
 # 提示詞組裝收斂到 chat_prompt（單一來源）。DEFAULT_SYSTEM 由此再匯出，
 # 既有 `from neuron_probe import DEFAULT_SYSTEM` 仍可用，語意不變。
 from chat_prompt import DEFAULT_SYSTEM, render_chat  # noqa: E402,F401
@@ -426,14 +427,33 @@ def load_target_model(model_id: str | None, checkpoint: str, model_name: str):
         if model is None:
             raise SystemExit(f"載入失敗：{model_id} / {checkpoint}")
     else:
-        print(f"載入模型：{model_name} ...")
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map={"": 0} if torch.cuda.is_available() else "cpu",
-            attn_implementation="eager",
-        )
+        # model_name 可能指向一個「packed 遮罩目錄」(models/packed/..，只有平坦遮罩、沒權重)：
+        # 載 HF base 再套遮罩（compose），不存也不需完整權重。否則當成一般 HF 名稱/本地模型，
+        # 相對路徑解析成絕對（避免 cwd≠MLOps 時 from_pretrained 把本地目錄誤當 hub id）。
+        from model_registry import resolve_revision  # 釘死的 base 版本（單一真相）
+        _local = MLOPS_DIR / model_name
+        pinfo = read_prune_checkpoint(_local) if _local.is_dir() else None
+        _dev = {"": 0} if torch.cuda.is_available() else "cpu"
+        if pinfo is not None:
+            base = pinfo["base_model"]
+            _b = MLOPS_DIR / base
+            base_ref = str(_b) if _b.exists() else base
+            rev = None if _b.exists() else resolve_revision(base)   # 本地目錄不傳 revision
+            print(f"載入模型（packed 遮罩）：{model_name} ← base {base} …")
+            tokenizer = AutoTokenizer.from_pretrained(base_ref, revision=rev)
+            model = AutoModelForCausalLM.from_pretrained(
+                base_ref, revision=rev, torch_dtype=torch.bfloat16, device_map=_dev,
+                attn_implementation="eager")
+            apply_prune_mask(model, pinfo["neurons"], verbose=False)
+            apply_reverse_mask(model, pinfo["reversed"], verbose=False)
+        else:
+            load_ref = str(_local) if _local.exists() else model_name
+            rev = None if _local.exists() else resolve_revision(model_name)
+            print(f"載入模型：{model_name} ...")
+            tokenizer = AutoTokenizer.from_pretrained(load_ref, revision=rev)
+            model = AutoModelForCausalLM.from_pretrained(
+                load_ref, revision=rev, torch_dtype=torch.bfloat16, device_map=_dev,
+                attn_implementation="eager")
 
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     model.eval()

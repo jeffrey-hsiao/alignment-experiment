@@ -23,9 +23,37 @@ def load_model_registry() -> dict:
     return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
 
 
+def resolve_revision(model_name: str) -> str | None:
+    """repo-id → 釘死的 commit revision（單一真相，供所有載入點共用）。
+
+    比對 registry base 條目的 "name"：命中且有 "revision" 就回傳那個 commit SHA，讓
+    from_pretrained 永遠載這個不可變版本（上游更新 main 不會悄悄帶走我們）。找不到或
+    未釘版本回傳 None＝走預設 main（未登記的模型、本地路徑都是這條，行為與過往相同）。
+    只對 hub repo-id 有意義；本地目錄路徑不該傳 revision（呼叫端自行判斷）。
+
+    比對不分大小寫：HF repo-id 本身大小寫不敏感，而 packed 條目的 base_model 字串
+    （如 'microsoft/phi-3.5-mini-instruct'）常與 base 條目的 name（'…/Phi-3.5-mini-instruct'）
+    大小寫不同——若做精確比對會找不到、悄悄退回 main，正好砸掉這裡要保證的可重現性。"""
+    if not model_name:
+        return None
+    target = model_name.lower()
+    for m in load_model_registry().get("base", []):
+        if m.get("name", "").lower() == target:
+            return m.get("revision") or None
+    return None
+
+
 def read_summary(path: Path) -> dict:
     """讀取 run_summary.json。用 utf-8-sig：部分舊檔案開頭帶 BOM，用 utf-8 讀會直接拋 JSONDecodeError。"""
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def scan_packed_models() -> list[dict]:
+    """回傳 registry.json 的 "packed" 清單（包裝模型：prune checkpoint 烘焙成的獨立權重）。
+
+    只讀 JSON，不依賴 torch；實際烘焙與登記在 packer.py。每筆含
+    id / name / source_run / source_checkpoint / base_model / zeroed / reversed / created_at。"""
+    return load_model_registry().get("packed", [])
 
 
 def scan_trained_models() -> list[tuple[str, str, str, str, list[str]]]:

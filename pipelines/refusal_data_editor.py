@@ -67,11 +67,17 @@ MODEL_GROUPS_DIR = Path(__file__).parent.parent / "data" / "model_groups"
 
 
 def available_models() -> list[str]:
-    """registry.json 裡的模型 name 清單。"""
+    """registry.json 裡的模型 name 清單：基礎模型 + 包裝模型（packed）。
+
+    包裝模型（prune 存檔點烘焙成的獨立權重）回傳其本地路徑名（如
+    models/packed/<id>），這與 prune pipeline 跑分類時用的 cfg["model_name"] 相同，
+    所以 model_group_map() 的 slug 會對上，能查到它「越了哪些題目」的真實分類。"""
     if not REGISTRY.exists():
         return []
     reg = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    return [m["name"] for m in reg.get("base", []) if m.get("name")]
+    base   = [m["name"] for m in reg.get("base", [])   if m.get("name")]
+    packed = [m["name"] for m in reg.get("packed", []) if m.get("name")]
+    return base + packed
 
 
 def model_group_map(model_name: str) -> dict[str, str]:

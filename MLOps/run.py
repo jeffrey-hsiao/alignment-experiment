@@ -598,10 +598,30 @@ def cmd_continuetrain(args):
     source_summary = read_summary(summary_path)
     method         = source_summary["method"]
 
-    base_ckpt = _find_best_checkpoint(source_dir)
+    requested_ckpt = getattr(args, "checkpoint", None)
+    if requested_ckpt:
+        base_ckpt = source_dir / "checkpoints" / requested_ckpt
+        if not base_ckpt.exists():
+            print(f"找不到 checkpoint：{requested_ckpt}（在 {source_run_id}）")
+            return
+    else:
+        base_ckpt = _find_best_checkpoint(source_dir)
     if not base_ckpt:
         print(f"找不到可用的 checkpoint：{source_run_id}")
         return
+
+    # prune 系列的 checkpoint 只是神經元遮罩、沒有權重，不能直接當底模 →
+    # 自動呼叫 packer 烘焙成獨立模型，之後以 --overrides_json 覆寫 model_name 指向它。
+    # 對 prune 方法而言，「接續」＝在已剪一層的模型上重跑整條 prune（重分類+重排行+再剪）＝遞迴 prune。
+    from prune_utils import read_prune_checkpoint
+    packed_entry = None
+    if read_prune_checkpoint(base_ckpt) is not None:
+        import packer
+        try:
+            packed_entry = packer.pack_prune_checkpoint(source_run_id, base_ckpt.name)
+        except packer.PackError as e:
+            print(f"自動包裝失敗：{e}")
+            return
 
     config_name = getattr(args, "config",   None) or _get_default(method)
     versions    = getattr(args, "versions", None) or _get_data_default(method)
@@ -648,14 +668,62 @@ def cmd_continuetrain(args):
             "base_run_id":     source_run_id,
             "continued_from":  source_run_id,
             "base_checkpoint": _rel(base_ckpt),
+            **({"packed_model": packed_entry["id"]} if packed_entry else {}),
         },
     )
 
-    print(f"\n[{run_id}] 接續訓練（源：{source_run_id} → {base_ckpt.name}）...")
+    print(f"\n[{run_id}] 接續訓練（源：{source_run_id} → {base_ckpt.name}"
+          + (f"，底模＝包裝模型 {packed_entry['id']}" if packed_entry else "") + "）...")
     cmd = _train_cmd(script_path, config_name, exp_dir, new_summary_path, all_trains, all_vals)
-    cmd += ["--base_model", str(base_ckpt)]
+    if packed_entry:
+        # prune 搜尋路徑讀 cfg["model_name"]（非 --base_model），用既有的 --overrides_json 覆寫它
+        cmd += ["--overrides_json", json.dumps({"model_name": packed_entry["name"]})]
+    else:
+        cmd += ["--base_model", str(base_ckpt)]
 
     _launch(cmd, getattr(args, "inline", False), run_id)
+
+
+# ── pack subcommand ────────────────────────────────────────────────────────────
+
+def cmd_pack(args):
+    """把 prune / prune_v2 的 checkpoint 烘焙成獨立權重模型並登記進 registry（packed 區）。
+
+    之後它就是個普通模型：可 chat，也可當 continuetrain 的底模（遞迴 prune）。
+    continuetrain 遇到 prune 存檔點時會自動呼叫這裡，不必手動先 pack。"""
+    import packer
+    try:
+        entry = packer.pack_prune_checkpoint(
+            args.run_id, getattr(args, "checkpoint", None), force=getattr(args, "force", False))
+    except packer.PackError as e:
+        print(f"包裝失敗：{e}")
+        sys.exit(1)
+    print(f"\n包裝完成：{entry['id']}")
+    print(f"  路徑：{entry['name']}")
+    print(f"  來源：{entry['source_run']}/{entry['source_checkpoint']}  底模：{entry['base_model']}")
+    print(f"  歸零 {entry['zeroed']}、取負 {entry['reversed']}")
+    print(f"  用法：python run.py chat {entry['id']}")
+    print(f"        python run.py continuetrain {entry['source_run']} {entry['source_checkpoint']}  ← 遞迴 prune")
+
+
+def cmd_regroup(args):
+    """重分類：用指定模型實跑種子題並依拒絕/順從重新分組，寫進 data/model_groups/。
+
+    直接重用 prune 的 _model_groups，產出檔案與 prune 內部一致（editor / 後續 prune 共用）。
+    拿來看「包裝模型到底把哪些題越獄了」，不必跑整條 prune。"""
+    import regroup
+    try:
+        r = regroup.regroup_model(
+            args.model,
+            seeds=getattr(args, "seeds", None) or "data/seeds/km_merged.jsonl",
+            limit=getattr(args, "limit", 0) or 0)
+    except Exception as e:
+        print(f"重分類失敗：{e}")
+        sys.exit(1)
+    print(f"\n重分類完成：{r['model_name']}")
+    print(f"  拒絕 {r['refused']} / 順從 {r['complied']}（共 {r['n']} 題）")
+    print(f"  分組檔：{r['path']}")
+    print(f"  （editor 選此模型即可看每題真實分類）")
 
 
 # ── result subcommands ─────────────────────────────────────────────────────────
@@ -1033,6 +1101,8 @@ def _build_parser():
     retp.add_argument("--inline", action="store_true")
     ctp = tsub.add_parser("continuetrain")
     ctp.add_argument("run_id")
+    ctp.add_argument("checkpoint", nargs="?", default=None,
+                     help="指定接續的 checkpoint（省略＝最佳）；prune 存檔點會自動 pack 成底模")
     ctp.add_argument("--config",   default=None)
     ctp.add_argument("--versions", nargs="+", metavar="vN")
     ctp.add_argument("--dates",    nargs="+", metavar="YYYYMMDD")
@@ -1059,6 +1129,19 @@ def _build_parser():
     cchp = sub.add_parser("compare-chat", add_help=False)
     cchp.add_argument("run_ids", nargs="+", metavar="run_id")
     cchp.add_argument("--checkpoint", default="final")
+
+    # pack（把 prune 存檔點烘焙成獨立模型）
+    pkp = sub.add_parser("pack", add_help=False)
+    pkp.add_argument("run_id")
+    pkp.add_argument("checkpoint", nargs="?", default=None,
+                     help="要烘焙的 checkpoint（省略＝最佳）")
+    pkp.add_argument("--force", action="store_true", help="已存在也重新烘焙")
+
+    # regroup（用某模型重分類種子題，寫 data/model_groups/）
+    rgp = sub.add_parser("regroup", add_help=False)
+    rgp.add_argument("model", help="模型：registry id（base/packed）、HF 名稱或本地路徑")
+    rgp.add_argument("--seeds", default=None, help="種子題路徑（預設 data/seeds/km_merged.jsonl）")
+    rgp.add_argument("--limit", type=int, default=0, help="只取前 N 題（預設 0＝全部）")
 
     # list-models
     sub.add_parser("list-models", add_help=False)
@@ -1121,6 +1204,12 @@ def _dispatch(args, dp, tp, rp, cp):
         else:
             rp.print_help()
 
+    elif args.command == "pack":
+        cmd_pack(args)
+
+    elif args.command == "regroup":
+        cmd_regroup(args)
+
     elif args.command == "chat":
         cmd_chat(args)
 
@@ -1145,7 +1234,7 @@ def _dispatch(args, dp, tp, rp, cp):
             cp.print_help()
 
     else:
-        print("指令：data / train / result / chat / list-models / showmode / test / config / exit")
+        print("指令：data / train / pack / regroup / result / chat / list-models / showmode / test / config / exit")
 
 
 # ── entry point ────────────────────────────────────────────────────────────────
@@ -1163,7 +1252,11 @@ HELP_TEXT = """\
   train prune --config <name> [--inline]     ← 裁減；mode=km_search 時自動掃描 K、M
   train <method> --resume <run_id>           ← 接續中斷的 run（通用、訊息驅動，沿用原目錄）
   train retrain <run_id> [run_id ...]
-  train continuetrain <run_id> [--config <name>] [--versions vN ...] [--dates YYYYMMDD ...]
+  train continuetrain <run_id> [checkpoint] [--config <name>] [--versions vN ...] [--dates YYYYMMDD ...]
+                                         ← prune 存檔點會自動 pack 成底模再接續（遞迴 prune）
+  pack <run_id> [checkpoint] [--force]   ← 把 prune 存檔點（遮罩）烘焙成獨立權重模型
+  regroup <model> [--seeds <path>] [--limit N]
+                                         ← 用某模型重分類種子題（看它越了哪些題），寫 data/model_groups/
   result list
   result show <run_id>
   result inspect <run_id>
