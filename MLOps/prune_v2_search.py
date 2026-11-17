@@ -28,7 +28,7 @@ _evaluate 以 (kind,k,m,repeat) 為鍵直接命中已完成格，不重新生成
 import json
 
 from prune_search import KmSearchRunner, KmSearchError, run_sweep, ThresholdCriterion
-from prune_utils import write_prune_checkpoint
+# checkpoint 寫入走 CellRunner._write_checkpoint（繼承自 KmSearchRunner → CellRunner）
 
 
 class PruneV2Runner(KmSearchRunner):
@@ -67,8 +67,7 @@ class PruneV2Runner(KmSearchRunner):
 
         if top:
             zeroed, reversed_neurons, _, _, _ = self._select("sync", top[0]["k"], top[0]["m"], 0)
-            write_prune_checkpoint(self.output_dir / "final", self.cfg["model_name"],
-                                   zeroed, reversed_neurons=reversed_neurons,
+            self._write_checkpoint("final", zeroed, reversed_neurons,
                                    phase="final", k=top[0]["k"], m=top[0]["m"])
 
         try:

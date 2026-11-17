@@ -31,7 +31,7 @@ import torch
 
 from neuron_probe import GenerationProbe, GroupStats, load_seeds, load_target_model  # noqa: E402
 from behavior_regroup import generate_all  # noqa: E402
-from prune_utils import apply_reverse_mask, apply_prune_mask, write_prune_checkpoint  # noqa: E402
+from prune_utils import apply_reverse_mask, apply_prune_mask  # noqa: E402
 from prune_search import (  # noqa: E402  ★共用引擎
     POSITIVE, NEGATIVE, rate_order, select_tables, run_sweep, ThresholdCriterion, CellRunner,
     free_cuda, load_source, split_by_pair, stratified_order, is_collapsed,
@@ -270,8 +270,8 @@ class KmCosRunner(CellRunner):
         # 每格都寫一個可載入的 checkpoint（checkpoint-<step>），與 prune 一致：之後能用
         # model_loader 載任一格的 cosplay 模型比較，不必只有結尾的 final。cache 命中會提早
         # return，所以 resume 不會重寫已存在的格。
-        write_prune_checkpoint(self.output_dir / f"checkpoint-{cell['step']}", self.cfg["model_name"],
-                               zeroed, reversed_neurons=reversed_neurons, phase=kind, k=k, m=m,
+        self._write_checkpoint(f"checkpoint-{cell['step']}", zeroed, reversed_neurons,
+                               phase=kind, k=k, m=m,
                                metrics={"flips": flips, "n": n, "cos": cos, "auto_collapse": collapse})
         rate = flips / max(1, n)
         print(f"[{kind}] K={k} M={m} r={repeat} 崩壞 {collapse}/{n} 翻轉 {flips}/{n}"
@@ -371,8 +371,7 @@ class KmCosRunner(CellRunner):
 
         if best:
             zeroed, reversed_neurons, _ = self._select(best["k"], best["m"], 0)
-            write_prune_checkpoint(self.output_dir / "final", self.cfg["model_name"],
-                                   zeroed, reversed_neurons=reversed_neurons,
+            self._write_checkpoint("final", zeroed, reversed_neurons,
                                    phase="final", k=best["k"], m=best["m"])
         for cb in self.callbacks:
             cb.on_train_end(fake_args, state, control)

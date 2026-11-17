@@ -422,6 +422,12 @@ class CellRunner:
             print(f"接續：讀回 {len(prior['cells'])} 個已完成格（_find 會直接命中、跳過重算）",
                   flush=True)
 
+    def _write_checkpoint(self, name: str, zeroed, reversed_neurons, **meta):
+        """寫一格的 pruned_neurons.json 到 output_dir/<name>（name 如 'checkpoint-3' 或 'final'）。
+        km_search / prune_v2 / km_cos 共用，省掉各自拼 write_prune_checkpoint 的樣板。"""
+        return write_prune_checkpoint(self.output_dir / name, self.cfg["model_name"],
+                                      zeroed, reversed_neurons=reversed_neurons, **meta)
+
     def _find(self, kind: str, k: int, m: int, repeat: int = 0) -> dict | None:
         for cell in self.state["cells"]:
             if (cell["kind"], cell["k"], cell["m"], cell["repeat"]) == (kind, k, m, repeat):
@@ -606,8 +612,7 @@ class KmSearchRunner(CellRunner):
             cb.on_log(fake_args, state, control, logs=logs)
         for cb in self.callbacks:
             cb.on_evaluate(fake_args, state, control, model=None, logs=logs)
-        write_prune_checkpoint(self.output_dir / f"checkpoint-{cell['step']}", self.cfg["model_name"],
-                               zeroed, reversed_neurons=reversed_neurons,
+        self._write_checkpoint(f"checkpoint-{cell['step']}", zeroed, reversed_neurons,
                                phase=cell["kind"], metrics=logs)
         for cb in self.callbacks:
             cb.on_save(fake_args, state, control)
@@ -796,8 +801,7 @@ class KmSearchRunner(CellRunner):
 
         if top:
             zeroed, reversed_neurons, _, _, _ = self._select("sync", top[0]["k"], top[0]["m"], 0)
-            write_prune_checkpoint(self.output_dir / "final", self.cfg["model_name"],
-                                   zeroed, reversed_neurons=reversed_neurons,
+            self._write_checkpoint("final", zeroed, reversed_neurons,
                                    phase="final", k=top[0]["k"], m=top[0]["m"])
         self._write_report()
         for cb in self.callbacks:
