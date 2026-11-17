@@ -121,6 +121,23 @@ def fmt_run(r: dict) -> str:
             f"人格:{r['persona'] or '—':<10} {len(r['ckpts'])}ckpt")
 
 
+def list_checkpoints(run_id: str) -> list:
+    """某 run 磁碟上實際存在的 checkpoint 目錄名，自然排序（checkpoint-2 在 checkpoint-10 前，
+    final 殿後）。給二次訓練下拉用，避免手打錯 checkpoint 名。"""
+    d = EXPERIMENTS / run_id / "checkpoints"
+    if not d.is_dir():
+        return []
+
+    def key(n):
+        if n.startswith("checkpoint-"):
+            try:
+                return (0, int(n.split("-", 1)[1]))
+            except ValueError:
+                return (1, 0)
+        return (2, 0)   # final 等非編號的排最後
+    return sorted((p.name for p in d.iterdir() if p.is_dir()), key=key)
+
+
 def launch(method: str, config_stem: str) -> None:
     """在新進程發射 `run.py train <method> --config <stem>`（cwd=MLOps）。"""
     subprocess.Popen([sys.executable, "run.py", "train", method, "--config", config_stem],

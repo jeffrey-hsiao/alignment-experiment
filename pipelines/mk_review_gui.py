@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _gui_common import (EXPERIMENTS, set_text,          # 共用常數/UI
-                         km_runs, fmt_run,               # 共用：訓練 run 列表 + 顯示格式
-                         launch_continuetrain)           # 共用：發射二次訓練
+from _gui_common import (EXPERIMENTS, set_text,                      # 共用常數/UI
+                         km_runs, fmt_run,                           # 共用：訓練 run 列表 + 顯示格式
+                         launch_continuetrain, list_checkpoints)     # 共用：發射二次訓練 + checkpoint 列舉
 
 
 # ── 純資料層（可單獨測）──────────────────────────────────────────────────────────
@@ -145,8 +145,9 @@ def main():
     # 二次訓練：對選中的 run 發射 continuetrain（run.py 會自動把遮罩 checkpoint 封裝成底模）
     arow = ttk.Frame(frm); arow.pack(fill="x", pady=(4, 2))
     ttk.Label(arow, text="二次訓練 · checkpoint").pack(side="left")
-    ckpt_var = tk.StringVar()
-    ttk.Entry(arow, textvariable=ckpt_var, width=14).pack(side="left", padx=2)
+    ckpt_var = tk.StringVar(value="（最佳）")
+    ckpt_box = ttk.Combobox(arow, textvariable=ckpt_var, values=["（最佳）"], state="readonly", width=15)
+    ckpt_box.pack(side="left", padx=2)
     ttk.Label(arow, text="config").pack(side="left")
     cfg_var = tk.StringVar()
     ttk.Entry(arow, textvariable=cfg_var, width=26).pack(side="left", padx=2)
@@ -158,6 +159,8 @@ def main():
         if not state["run_id"]:
             messagebox.showwarning("未選 run", "請先在上方選一個 run。"); return
         ck, cf = ckpt_var.get().strip(), cfg_var.get().strip()
+        if ck == "（最佳）":
+            ck = ""
         if not messagebox.askyesno(
                 "二次訓練 continuetrain",
                 f"對 {state['run_id']} 發射 continuetrain？\n\n"
@@ -198,6 +201,8 @@ def main():
                 pass
         state.update(cells=cells, baseline=baseline, run_id=rid, config=src_cfg)
         cfg_var.set(src_cfg)
+        ckpt_box.configure(values=["（最佳）"] + list_checkpoints(rid))   # 實際存在的 checkpoint
+        ckpt_var.set("（最佳）")
         Ts = sorted({c["k"] + c["m"] for c in cells})
         t_box.configure(values=["全部"] + [str(t) for t in Ts])
         t_var.set("全部")

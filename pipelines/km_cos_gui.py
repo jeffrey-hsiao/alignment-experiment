@@ -33,7 +33,7 @@ DEFAULT_SEEDS = "data/seeds/km_cos_persona_prompts.jsonl"  # 人格誘發專用�
 sys.path.insert(0, str(Path(__file__).parent))
 from _gui_common import (existing_run_names, newest_run_dir, launch, spin, set_text,  # 共用發射/UI
                          PERSONA_DIR, list_personas, load_persona, save_persona,      # 共用人格庫
-                         km_runs, fmt_run, launch_continuetrain)                      # 共用：二次訓練
+                         km_runs, fmt_run, launch_continuetrain, list_checkpoints)    # 共用：二次訓練
 try:
     from refusal_data_editor import available_models  # 共用 registry 讀取
 except Exception:
@@ -272,8 +272,9 @@ def main():
     ct_box.pack(side="left", padx=4)
     cr = ttk.Frame(ctf); cr.pack(fill="x", pady=(4, 0))
     ttk.Label(cr, text="checkpoint").pack(side="left")
-    ct_ckpt = tk.StringVar()
-    ttk.Entry(cr, textvariable=ct_ckpt, width=14).pack(side="left", padx=2)
+    ct_ckpt = tk.StringVar(value="（最佳）")
+    ct_ckpt_box = ttk.Combobox(cr, textvariable=ct_ckpt, values=["（最佳）"], state="readonly", width=15)
+    ct_ckpt_box.pack(side="left", padx=2)
     ttk.Label(cr, text="config").pack(side="left")
     ct_cfg = tk.StringVar()
     ttk.Entry(cr, textvariable=ct_cfg, width=24).pack(side="left", padx=2)
@@ -286,8 +287,11 @@ def main():
         sel = ct_var.get().strip()
         if not sel:
             return
-        r = next((x for x in ct_runs if x["run_id"] == sel.split()[0]), None)
+        rid = sel.split()[0]
+        r = next((x for x in ct_runs if x["run_id"] == rid), None)
         ct_cfg.set(r["config"] if r else "")   # 預設沿用該 run 的 config（km_cos 才保得住 persona）
+        ct_ckpt_box.configure(values=["（最佳）"] + list_checkpoints(rid))  # 實際存在的 checkpoint
+        ct_ckpt.set("（最佳）")
 
     def ct_reload():
         ct_runs[:] = km_runs()
@@ -297,7 +301,10 @@ def main():
         sel = ct_var.get().strip()
         if not sel:
             messagebox.showwarning("未選 run", "請先在二次訓練區選一個已訓練 run。"); return
-        rid, ck, cf = sel.split()[0], ct_ckpt.get().strip(), ct_cfg.get().strip()
+        rid, cf = sel.split()[0], ct_cfg.get().strip()
+        ck = ct_ckpt.get().strip()
+        if ck == "（最佳）":
+            ck = ""          # 哨兵 → 留空＝用最佳 checkpoint
         if not messagebox.askyesno("二次訓練 continuetrain",
                 f"對 {rid} 發射 continuetrain？\n\n  checkpoint = {ck or '（最佳）'}\n"
                 f"  config = {cf or '（該方法預設）'}\n\n"
