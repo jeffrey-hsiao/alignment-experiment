@@ -14,7 +14,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _gui_common import EXPERIMENTS, REPO, MLOPS, set_text, resolve_persona_name  # 共用常數/UI/人格解析
+from _gui_common import (EXPERIMENTS, REPO, MLOPS, set_text, resolve_persona_name,  # 共用常數/UI/人格解析
+                         launch_continuetrain)                                      # 共用：發射二次訓練
 
 KM_METHODS = {"prune", "prune_v2", "km_search", "km_cos"}   # 走 cell-sweep、產 km_state.json 的方法
 
@@ -158,7 +159,7 @@ def _fmt_run(r: dict) -> str:
 
 def main():
     import tkinter as tk
-    from tkinter import ttk
+    from tkinter import ttk, messagebox
 
     runs = km_runs()
     root = tk.Tk()
@@ -167,7 +168,7 @@ def main():
     frm = ttk.Frame(root, padding=10)
     frm.pack(fill="both", expand=True)
 
-    state = {"cells": [], "baseline": {}, "run_id": None}
+    state = {"cells": [], "baseline": {}, "run_id": None, "config": ""}
 
     top = ttk.Frame(frm); top.pack(fill="x")
     ttk.Label(top, text="Run").pack(side="left")
@@ -186,8 +187,39 @@ def main():
     m_box = ttk.Combobox(trow, textvariable=method_var, values=list(METHODS), state="readonly", width=10)
     m_box.pack(side="left", padx=4)
 
-    out = tk.Text(frm, height=34, wrap="none", state="disabled", font=("Consolas", 10))
+    # 二次訓練：對選中的 run 發射 continuetrain（run.py 會自動把遮罩 checkpoint 封裝成底模）
+    arow = ttk.Frame(frm); arow.pack(fill="x", pady=(4, 2))
+    ttk.Label(arow, text="二次訓練 · checkpoint").pack(side="left")
+    ckpt_var = tk.StringVar()
+    ttk.Entry(arow, textvariable=ckpt_var, width=14).pack(side="left", padx=2)
+    ttk.Label(arow, text="config").pack(side="left")
+    cfg_var = tk.StringVar()
+    ttk.Entry(arow, textvariable=cfg_var, width=26).pack(side="left", padx=2)
+
+    out = tk.Text(frm, height=32, wrap="none", state="disabled", font=("Consolas", 10))
     out.pack(fill="both", expand=True, pady=(6, 0))
+
+    def do_continue():
+        if not state["run_id"]:
+            messagebox.showwarning("未選 run", "請先在上方選一個 run。"); return
+        ck, cf = ckpt_var.get().strip(), cfg_var.get().strip()
+        if not messagebox.askyesno(
+                "二次訓練 continuetrain",
+                f"對 {state['run_id']} 發射 continuetrain？\n\n"
+                f"  checkpoint = {ck or '（最佳）'}\n  config = {cf or '（該方法預設）'}\n\n"
+                "prune/km_cos 的遮罩 checkpoint 會自動封裝成 packed 底模，訓練在新視窗開。"):
+            return
+        launch_continuetrain(state["run_id"], cf, ck)
+        messagebox.showinfo("已發射", f"continuetrain 已啟動（源 {state['run_id']}）。\n"
+                                      "新 run 跑出 checkpoint 後，按『重整』即可在清單看到。")
+
+    def reload_runs():
+        nonlocal runs
+        runs = km_runs()
+        run_box.configure(values=[_fmt_run(r) for r in runs])
+
+    ttk.Button(arow, text="接續訓練", command=do_continue).pack(side="left", padx=6)
+    ttk.Button(arow, text="重整清單", command=reload_runs).pack(side="left")
 
     def refresh_view(*_):
         if not state["cells"]:
@@ -201,7 +233,16 @@ def main():
             return
         rid = runs[i]["run_id"]
         cells, baseline = load_cells(rid)
-        state.update(cells=cells, baseline=baseline, run_id=rid)
+        # 來源 run 的 config（二次訓練預設沿用它：km_cos 才保得住 persona 等超參）
+        src_cfg = ""
+        sp = EXPERIMENTS / rid / "run_summary.json"
+        if sp.exists():
+            try:
+                src_cfg = json.loads(sp.read_text(encoding="utf-8")).get("config", "") or ""
+            except Exception:
+                pass
+        state.update(cells=cells, baseline=baseline, run_id=rid, config=src_cfg)
+        cfg_var.set(src_cfg)
         Ts = sorted({c["k"] + c["m"] for c in cells})
         t_box.configure(values=["全部"] + [str(t) for t in Ts])
         t_var.set("全部")

@@ -78,6 +78,18 @@ def launch(method: str, config_stem: str) -> None:
                      cwd=str(MLOPS))
 
 
+def launch_continuetrain(run_id: str, config: str = "", checkpoint: str = "") -> None:
+    """發射 `run.py train continuetrain <run_id> [checkpoint] [--config ...]`（二次訓練）。
+    run.py 會自動把 prune/km_cos 的遮罩 checkpoint 封裝成 packed 底模再續訓。checkpoint 是
+    位置引數（留空＝最佳）；config 留空＝用該方法預設，建議帶來源 run 的 config（才有 persona）。"""
+    cmd = [sys.executable, "run.py", "train", "continuetrain", run_id]
+    if checkpoint:
+        cmd.append(checkpoint)          # 位置引數
+    if config:
+        cmd += ["--config", config]
+    subprocess.Popen(cmd, cwd=str(MLOPS))
+
+
 def spin(parent, label, default, col, width=8):
     """一格「標籤 + 輸入框」，回傳綁定的 StringVar。col 控制在同一列的第幾組。"""
     from tkinter import ttk
