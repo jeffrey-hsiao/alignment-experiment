@@ -57,7 +57,9 @@ MLOps/rag/index/
 MLOps/models/packed/
 
 # km_cos / prune_v2 GUI 產生的 scratch config（檔名含時間戳，非源碼）
+#   km_cos_gui_<ts>＝發射新 run；km_cos_cont_<ts>＝二次訓練（continuetrain）自動生成
 MLOps/train/configs/km_cos/*km_cos_gui_*
+MLOps/train/configs/km_cos/*km_cos_cont_*
 
 # config 執行期的日期快照展開目錄（configs/<method>/<stem>/<YYYYMMDD>.txt）。
 # run.py 的 _snapshot_config 會在缺資料夾時自動 mkdir 重建，故整個資料夾不需版控。
