@@ -45,7 +45,7 @@ except Exception:
 def write_run_files(name: str, target_system: str, base_system: str, model: str,
                     seeds: str, t_max_ratio: float, sweep_steps: int, k_decay: float,
                     flip_frac, flip_low, sign: str,
-                    control_repeats: int, gen_max_tokens: int) -> Path:
+                    control_repeats: int, gen_max_tokens: int, n_steps: int = 8) -> Path:
     """寫出 persona 檔 + km_cos config 檔,回傳 config 路徑。純檔案操作,可單獨測。
 
     flip_frac：逐筆翻轉邊界在 rank 兩基準間的位置（留空＝用 KmCosConfig 預設 0.5＝中點）。
@@ -75,6 +75,7 @@ sweep_steps         = {sweep_steps}
 k_decay             = {k_decay}
 {thresh_lines}control_repeats     = {control_repeats}
 gen_max_tokens      = {gen_max_tokens}
+n_steps             = {n_steps}
 """, encoding="utf-8")
     return cfg
 
@@ -111,7 +112,7 @@ def load_config(stem: str) -> dict:
         "model": g("model_name"), "seeds": g("seeds"), "sign": g("sign") or "both",
         "t_max_ratio": g("t_max_ratio"), "sweep_steps": g("sweep_steps"),
         "k_decay": g("k_decay"), "control_repeats": g("control_repeats"),
-        "gen_max_tokens": g("gen_max_tokens"),
+        "gen_max_tokens": g("gen_max_tokens"), "n_steps": g("n_steps"),
         "flip_frac": g("flip_frac"), "flip_low": g("flip_low"),
     }
 
@@ -237,6 +238,7 @@ def main():
         put(k_decay, v["k_decay"], "0.75")
         put(reps, v["control_repeats"], "5")
         put(gen_tokens, v["gen_max_tokens"], "128")
+        put(n_steps, v["n_steps"], "8")
         put(flip_frac, v["flip_frac"], "")   # 空＝用 KmCosConfig 預設
         put(flip_low, v["flip_low"], "")
         if set_name:
@@ -254,6 +256,7 @@ def main():
     sweep_steps = spin(prow, "sweep_steps", 8, 1)
     k_decay = spin(prow, "k_decay", 0.75, 2)
     gen_tokens = spin(prow, "gen_tokens", 128, 3)
+    n_steps = spin(prow, "n_steps(排序/建質心)", 8, 4)
 
     prow2 = ttk.Frame(frm); prow2.pack(fill="x", pady=2)
     sign_var = tk.StringVar(value="both")
@@ -278,7 +281,7 @@ def main():
         write_run_files(stem, target.get("1.0", "end"), base.get("1.0", "end"), model_box.get(),
                         seeds_var.get(), float(t_max_ratio.get()), int(sweep_steps.get()),
                         float(k_decay.get()), flip_frac.get().strip(), flip_low.get().strip(),
-                        sign_var.get(), int(reps.get()), int(gen_tokens.get()))
+                        sign_var.get(), int(reps.get()), int(gen_tokens.get()), int(n_steps.get()))
 
     # 二次訓練：挑一個已訓練 km_cos run → 它的 config 反映到上方欄位（可再調）→ 用目前欄位續訓。
     # 底模＝所選 run（遮罩 checkpoint 自動封裝成 packed），所以模型欄位對續訓不影響。
