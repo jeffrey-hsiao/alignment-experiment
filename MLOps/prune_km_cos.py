@@ -267,6 +267,12 @@ class KmCosRunner(CellRunner):
         }
         self.state["cells"].append(cell)
         self._save_state()
+        # 每格都寫一個可載入的 checkpoint（checkpoint-<step>），與 prune 一致：之後能用
+        # model_loader 載任一格的 cosplay 模型比較，不必只有結尾的 final。cache 命中會提早
+        # return，所以 resume 不會重寫已存在的格。
+        write_prune_checkpoint(self.output_dir / f"checkpoint-{cell['step']}", self.cfg["model_name"],
+                               zeroed, reversed_neurons=reversed_neurons, phase=kind, k=k, m=m,
+                               metrics={"flips": flips, "n": n, "cos": cos, "auto_collapse": collapse})
         rate = flips / max(1, n)
         print(f"[{kind}] K={k} M={m} r={repeat} 崩壞 {collapse}/{n} 翻轉 {flips}/{n}"
               f"（率 {rate:.0%}）cos={cos} 翻轉節點 {len(reversed_neurons)} {cell['seconds']}秒",
