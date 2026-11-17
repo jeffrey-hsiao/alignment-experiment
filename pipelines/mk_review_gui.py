@@ -2,8 +2,8 @@
 pipelines/mk_review_gui.py
 
 mk 系列（prune / prune_v2 / km_search / km_cos）的「成績查看器」GUI。選一個 run，按
-T=K+M 看每個 T 的「最佳格（翻轉率最高）」與「最低 K 格」，每格附 checkpoint 名稱
-（可直接 `python run.py chat <run_id> checkpoint-N` 載入該格）。可切「全部 / 只看某個 T」。
+T=K+M 看格子，每格附 checkpoint 名稱（可直接 `python run.py chat <run_id> checkpoint-N`
+載入該格）。兩個正交篩選：①T 篩選（全部／某個 T）；②每 T 取法（最佳格／最低K／全部）。
 
 選 run 的列表沿用 model list 的來源（model_registry.scan_trained_models），另外解出該 run
 的人格 prompt 名稱（例：迪奧娜）。只讀不改；UI 小工具、人格庫、run 掃描都復用既有程式，
@@ -106,20 +106,34 @@ def _cell_line(c, flip_low) -> str:
             f"{_rate(c):>4.0%}  cos={cos_s}  崩壞 {col_s:>6}  {ok}  {ckpt_of(c)}")
 
 
-def render_overview(cells, baseline) -> str:
+METHODS = ("最佳格", "最低K", "全部")   # 每個 T 的取法（與 T 篩選正交）
+
+
+def select_cells(cells, method) -> list:
+    """對每個 T 套用取法：最佳格（率最高）／最低K／全部。回傳扁平 cell list。"""
+    if method == "全部":
+        return list(cells)
+    key = "lowk" if method == "最低K" else "best"
+    return [r[key] for r in analyze_by_t(cells)]
+
+
+def render_table(cells, baseline, t_scope="全部", method="最佳格") -> str:
+    """兩個正交維度：
+       t_scope — 只篩 T：'全部' 或某個 T 值。
+       method  — 每個 T 取哪些格：最佳格／最低K／全部。
+    底部固定附全域摘要（取自整個 run，不受上面篩選影響）。"""
     flip_low = float(baseline.get("flip_low") or 1.0)
-    rows = analyze_by_t(cells)
-    if not rows:
+    if not cells:
         return "（這個 run 沒有 sync 格——可能不是 sweep 型方法，或尚未跑出格子。）"
+    pool = cells if str(t_scope) in ("全部", "", "None") else [c for c in cells if c["k"] + c["m"] == int(t_scope)]
+    chosen = sorted(select_cells(pool, method), key=lambda c: (c["k"] + c["m"], c["k"]))
+    nT = len({c["k"] + c["m"] for c in pool})
     L = [f"flip_low={flip_low}   flip_boundary={baseline.get('flip_boundary', '--')}   "
          f"cos_base={baseline.get('cos_base', '--')}  cos_target={baseline.get('cos_target', '--')}",
-         f"共 {len(cells)} 個 sync 格、{len(rows)} 個 T 值。✓=達到 flip_low、✗=未達。", "",
-         "【每個 T 的最佳格（翻轉率最高）】"]
-    for r in rows:
-        L.append(f"  T={r['T']:<8}({r['n_cells']}格)  " + _cell_line(r["best"], flip_low))
-    L += ["", "【每個 T 的最低 K 格】"]
-    for r in rows:
-        L.append(f"  T={r['T']:<8}         " + _cell_line(r["lowk"], flip_low))
+         f"T={t_scope}　取法={method}　顯示 {len(chosen)} 格 / 共 {len(cells)} sync 格、{nT} 個 T。"
+         "  ✓=達標 ✗=未達", ""]
+    for c in chosen:
+        L.append(f"  T={c['k']+c['m']:<8} " + _cell_line(c, flip_low))
 
     viable = [c for c in cells if c.get("auto_collapse", 0) < c.get("n", 1)] or cells
     gbest = max(viable, key=lambda c: (_rate(c), c.get("cos", 0)))
@@ -133,17 +147,6 @@ def render_overview(cells, baseline) -> str:
                  f"翻轉 {mk.get('flips')}/{mk.get('n')} ({_rate(mk):.0%})  {ckpt_of(mk)}")
     else:
         L.append(f"沒有任何格達到 flip_low={flip_low}（全部翻轉率都低於門檻）。")
-    return "\n".join(L)
-
-
-def render_t_detail(cells, baseline, T: int) -> str:
-    flip_low = float(baseline.get("flip_low") or 1.0)
-    g = sorted([c for c in cells if c["k"] + c["m"] == T], key=lambda c: c["k"])
-    if not g:
-        return f"T={T} 沒有格子。"
-    L = [f"T={T}　共 {len(g)} 個 K（由小到大）。flip_low={flip_low}", ""]
-    for c in g:
-        L.append("  " + _cell_line(c, flip_low))
     return "\n".join(L)
 
 
@@ -178,6 +181,10 @@ def main():
     t_var = tk.StringVar(value="全部")
     t_box = ttk.Combobox(trow, textvariable=t_var, values=["全部"], state="readonly", width=16)
     t_box.pack(side="left", padx=4)
+    ttk.Label(trow, text="　每 T 取法").pack(side="left")
+    method_var = tk.StringVar(value="最佳格")
+    m_box = ttk.Combobox(trow, textvariable=method_var, values=list(METHODS), state="readonly", width=10)
+    m_box.pack(side="left", padx=4)
 
     out = tk.Text(frm, height=34, wrap="none", state="disabled", font=("Consolas", 10))
     out.pack(fill="both", expand=True, pady=(6, 0))
@@ -186,11 +193,7 @@ def main():
         if not state["cells"]:
             set_text(out, "（選一個 run。若此 run 無 sync 格，代表不是 sweep 型方法或尚未跑出格子。）")
             return
-        sel = t_var.get()
-        if sel == "全部":
-            set_text(out, render_overview(state["cells"], state["baseline"]))
-        else:
-            set_text(out, render_t_detail(state["cells"], state["baseline"], int(sel)))
+        set_text(out, render_table(state["cells"], state["baseline"], t_var.get(), method_var.get()))
 
     def on_pick_run(*_):
         i = run_box.current()
@@ -206,6 +209,7 @@ def main():
 
     run_box.bind("<<ComboboxSelected>>", on_pick_run)
     t_box.bind("<<ComboboxSelected>>", refresh_view)
+    m_box.bind("<<ComboboxSelected>>", refresh_view)
 
     if not runs:
         set_text(out, "尚無 km 相關方法（prune / prune_v2 / km_search / km_cos）且有 checkpoint 的 run。")
