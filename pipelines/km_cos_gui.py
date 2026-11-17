@@ -21,6 +21,7 @@ flip_low(翻轉率門檻,留空=1.0)。兩者留空即用 KmCosConfig 預設。
     或  python run.py            (無旗標時預設開這個)
 """
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -236,6 +237,7 @@ def main():
         put(gen_tokens, v["gen_max_tokens"], "128")
         put(flip_frac, v["flip_frac"], "")   # 空＝用 KmCosConfig 預設
         put(flip_low, v["flip_low"], "")
+        cfgname_var.set(stem)   # 預填名稱→再發射＝沿用同名 config（只改欄位就覆寫，不生新的一份）
 
     ttk.Button(crow, text="載入到欄位", command=do_load_config).pack(side="left", padx=2)
     ttk.Button(crow, text="重整清單",
@@ -331,7 +333,10 @@ def main():
             messagebox.showwarning("缺人格", "請先填『要誘發的人格』。"); return
         if not (REPO / seeds_var.get()).exists():
             messagebox.showwarning("找不到種子題", seeds_var.get()); return
-        stem = "km_cos_gui_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        name = cfgname_var.get().strip()
+        # 有填名稱＝用它當 config 檔名（可重用、可被續訓選到）；留空＝自動時間戳臨時 config
+        stem = (re.sub(r"[^\w一-鿿.-]+", "_", name) if name
+                else "km_cos_gui_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
         state["before"] = existing_run_names()   # 啟動前快照，poll 用來認出新 run 目錄
         state["run_dir"] = None                  # 重置，否則第二次發射會沿用上一個 run 的進度
         try:
@@ -371,6 +376,10 @@ def main():
             root.after(8000, poll)
 
     btns = ttk.Frame(frm); btns.pack(fill="x", pady=6)
+    ttk.Label(btns, text="config 名稱").pack(side="left")
+    cfgname_var = tk.StringVar()
+    ttk.Entry(btns, textvariable=cfgname_var, width=24).pack(side="left", padx=(2, 8))
+    ttk.Label(btns, text="(留空=時間戳)").pack(side="left", padx=(0, 8))
     ttk.Button(btns, text="發射 km_cos", command=do_launch).pack(side="left")
     ttk.Button(btns, text="重新整理進度", command=poll).pack(side="left", padx=6)
 
