@@ -407,6 +407,21 @@ class CellRunner:
         tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.state_path)
 
+    def _load_state(self) -> None:
+        """resume：把 state_path 讀回 self.state，讓 _find 命中已完成格、跳過重算。
+        只在有既有格子時覆寫（空檔或壞檔就維持初始 state，照常從頭跑）。"""
+        if not self.state_path.exists():
+            return
+        try:
+            prior = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"接續：km_state 讀取失敗（{e}），改從頭跑。", flush=True)
+            return
+        if prior.get("cells"):
+            self.state = prior
+            print(f"接續：讀回 {len(prior['cells'])} 個已完成格（_find 會直接命中、跳過重算）",
+                  flush=True)
+
     def _find(self, kind: str, k: int, m: int, repeat: int = 0) -> dict | None:
         for cell in self.state["cells"]:
             if (cell["kind"], cell["k"], cell["m"], cell["repeat"]) == (kind, k, m, repeat):

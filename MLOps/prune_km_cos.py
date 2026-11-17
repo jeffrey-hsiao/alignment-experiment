@@ -89,6 +89,28 @@ def build_ranking_contrastive(model, tokenizer, records: list[dict], n_steps: in
     return ranking, responses
 
 
+def _quiet_mp_shutdown() -> None:
+    """抑制 multiprocess.resource_tracker 在 Python 3.12 直譯器關閉時印的良性
+    AttributeError（'_thread.RLock' object has no attribute '_recursion_count'）。
+    e5/sentence_transformers 會拉進 multiprocess 套件；run 正常完成、checkpoint 都寫好後，
+    關閉期仍會印這段 traceback，看起來像「結束時崩潰」。只把壞掉的 _stop_locked 包成吞掉
+    例外，不改離開流程、不影響結果。安裝一次即可。"""
+    try:
+        from multiprocess import resource_tracker as _rt
+        if getattr(_rt.ResourceTracker, "_km_quiet", False):
+            return
+        _orig = _rt.ResourceTracker._stop_locked
+        def _safe(self, *a, **k):
+            try:
+                return _orig(self, *a, **k)
+            except Exception:
+                pass
+        _rt.ResourceTracker._stop_locked = _safe
+        _rt.ResourceTracker._km_quiet = True
+    except Exception:
+        pass
+
+
 class KmCosRunner(CellRunner):
     """與 KmSearchRunner 同介面（train/remove_callback），但走 km_cos 流程。
     狀態存檔 / 格子查找 / 載入模型 / 移除 callback 繼承自 CellRunner。"""
@@ -307,9 +329,12 @@ class KmCosRunner(CellRunner):
         import types
         from transformers import TrainerControl, TrainerState
 
-        if self.state_path.exists() and not resume_from_checkpoint:
-            raise KmCosError(f"{self.exp_dir.name} 已有結果，要接續請用："
-                             f"python run.py train km_cos --resume {self.exp_dir.name}")
+        _quiet_mp_shutdown()   # 抑制 e5/multiprocess 在關閉期的良性 traceback（看起來像崩潰）
+        if self.state_path.exists():
+            if not resume_from_checkpoint:
+                raise KmCosError(f"{self.exp_dir.name} 已有結果，要接續請用："
+                                 f"python run.py train km_cos --resume {self.exp_dir.name}")
+            self._load_state()   # 讀回已完成的格子；_prepare 仍重建 ranking/質心但不覆寫 cells
         state, control = TrainerState(), TrainerControl()
         fake_args = types.SimpleNamespace(output_dir=str(self.output_dir))
         for cb in self.callbacks:
