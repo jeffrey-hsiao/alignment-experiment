@@ -13,6 +13,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 MLOPS = REPO / "MLOps"
 EXPERIMENTS = MLOPS / "experiments"
+PERSONA_DIR = REPO / "data" / "personas"   # 人格 prompt 庫：每個 .txt 一個人格，檔名＝人格名
 
 
 def existing_run_names() -> set:
@@ -31,6 +32,41 @@ def newest_run_dir(before: set, config_stem: str):
         try:
             if sm.exists() and json.loads(sm.read_text(encoding="utf-8")).get("config") == config_stem:
                 return p
+        except Exception:
+            continue
+    return None
+
+
+# ── 人格庫（km_cos_gui / mk_review_gui 共用）────────────────────────────────────
+def list_personas() -> list:
+    """人格庫裡的人格名（.txt 檔名去副檔名），排序。"""
+    if not PERSONA_DIR.exists():
+        return []
+    return sorted(p.stem for p in PERSONA_DIR.glob("*.txt"))
+
+
+def load_persona(name: str) -> str:
+    """讀某個已存人格的 target system 內容。"""
+    return (PERSONA_DIR / f"{name}.txt").read_text(encoding="utf-8").strip()
+
+
+def save_persona(name: str, text: str) -> Path:
+    """把目前的人格 prompt 存進庫，回傳路徑。"""
+    PERSONA_DIR.mkdir(parents=True, exist_ok=True)
+    p = PERSONA_DIR / f"{name}.txt"
+    p.write_text(text.strip() + "\n", encoding="utf-8")
+    return p
+
+
+def resolve_persona_name(target_text: str):
+    """把一段 target_system 文字對回人格庫名稱（內容比對）。找不到回 None。"""
+    t = (target_text or "").strip()
+    if not t:
+        return None
+    for name in list_personas():
+        try:
+            if load_persona(name) == t:
+                return name
         except Exception:
             continue
     return None

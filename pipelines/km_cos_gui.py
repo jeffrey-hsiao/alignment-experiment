@@ -28,31 +28,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 MLOPS = REPO / "MLOps"
 KMCOS_CFG_DIR = MLOPS / "train" / "configs" / "km_cos"
-PERSONA_DIR = REPO / "data" / "personas"   # 人格 prompt 庫：每個 .txt 一個人格，檔名＝人格名
 DEFAULT_SEEDS = "data/seeds/km_cos_persona_prompts.jsonl"  # 人格誘發專用（高對比）
 
-
-def list_personas() -> list:
-    """人格庫裡的人格名（.txt 檔名去副檔名），排序。"""
-    if not PERSONA_DIR.exists():
-        return []
-    return sorted(p.stem for p in PERSONA_DIR.glob("*.txt"))
-
-
-def load_persona(name: str) -> str:
-    """讀某個已存人格的 target system 內容。"""
-    return (PERSONA_DIR / f"{name}.txt").read_text(encoding="utf-8").strip()
-
-
-def save_persona(name: str, text: str) -> Path:
-    """把目前的人格 prompt 存進庫，回傳路徑。"""
-    PERSONA_DIR.mkdir(parents=True, exist_ok=True)
-    p = PERSONA_DIR / f"{name}.txt"
-    p.write_text(text.strip() + "\n", encoding="utf-8")
-    return p
-
 sys.path.insert(0, str(Path(__file__).parent))
-from _gui_common import existing_run_names, newest_run_dir, launch, spin, set_text  # 共用發射/UI 小工具
+from _gui_common import (existing_run_names, newest_run_dir, launch, spin, set_text,  # 共用發射/UI
+                         PERSONA_DIR, list_personas, load_persona, save_persona)      # 共用人格庫
 try:
     from refusal_data_editor import available_models  # 共用 registry 讀取
 except Exception:

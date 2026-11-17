@@ -1146,6 +1146,9 @@ def _build_parser():
     # list-models
     sub.add_parser("list-models", add_help=False)
 
+    # mk-review（prune / km_cos 等 sweep 方法的成績查看 GUI）
+    sub.add_parser("mk-review", add_help=False)
+
     # showmode
     smp = sub.add_parser("showmode", add_help=False)
     smp.add_argument("name", nargs="?")
@@ -1219,6 +1222,9 @@ def _dispatch(args, dp, tp, rp, cp):
     elif args.command == "list-models":
         cmd_list_models(args)
 
+    elif args.command == "mk-review":
+        cmd_mk_review(args)
+
     elif args.command == "showmode":
         cmd_showmode(args)
 
@@ -1265,6 +1271,7 @@ HELP_TEXT = """\
   chat <run_id> [checkpoint]            ← 與訓練模型互動對話
   compare-chat <run_id> [<run_id> ...]  ← 多模型對話對比（單一面板）
   list-models                            ← 列出所有可用訓練模型
+  mk-review                              ← prune / km_cos 等成績查看 GUI（按 T 看最佳格/最低 K）
   showmode                       ← 查看可用顯示模式與目前設定
   showmode <name|none>           ← 切換顯示模式（none 停用）
   test <diagnose|load|nan>
@@ -1290,6 +1297,13 @@ def _launch_km_cos_gui():
     """無任何參數時的預設介面：km_cos（cosplay 行為編輯）圖形介面。"""
     import subprocess
     gui = ROOT.parent / "pipelines" / "km_cos_gui.py"
+    subprocess.run([sys.executable, str(gui)])
+
+
+def cmd_mk_review(args):
+    """mk 系列（prune / km_cos 等）成績查看 GUI：按 T 看最佳格/最低 K + checkpoint。"""
+    import subprocess
+    gui = ROOT.parent / "pipelines" / "mk_review_gui.py"
     subprocess.run([sys.executable, str(gui)])
 
 
