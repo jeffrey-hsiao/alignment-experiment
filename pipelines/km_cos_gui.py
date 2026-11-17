@@ -205,7 +205,8 @@ def main():
     seeds_var = tk.StringVar(value=DEFAULT_SEEDS)
     ttk.Entry(row, textvariable=seeds_var, width=36).grid(row=0, column=3, padx=4)
 
-    # 載入已有設定：選一份 config → 把值灌進下面所有欄位；發射仍以當前欄位生成新的臨時 config
+    # 載入已有設定：選一份 config → 內容「立即」灌進下面所有欄位（不必按按鈕）。
+    # 欄位是唯一真相：發射 km_cos 與二次訓練都從目前欄位生成 config。
     crow = ttk.Frame(frm); crow.pack(fill="x", pady=2)
     ttk.Label(crow, text="已有設定").pack(side="left")
     cfg_var = tk.StringVar()
@@ -213,8 +214,9 @@ def main():
                            state="readonly", width=38)
     cfg_box.pack(side="left", padx=4)
 
-    def do_load_config():
-        stem = cfg_var.get().strip()
+    def load_config_into_fields(stem, set_name=True):
+        """把一份 config 的內容反映到所有欄位（可給續訓/已有設定共用）。set_name=是否同步命名欄。"""
+        stem = (stem or "").strip()
         if not stem:
             return
         try:
@@ -237,9 +239,13 @@ def main():
         put(gen_tokens, v["gen_max_tokens"], "128")
         put(flip_frac, v["flip_frac"], "")   # 空＝用 KmCosConfig 預設
         put(flip_low, v["flip_low"], "")
-        cfgname_var.set(stem)   # 預填名稱→再發射＝沿用同名 config（只改欄位就覆寫，不生新的一份）
+        if set_name:
+            cfgname_var.set(stem)   # 預填名稱→再發射＝沿用同名 config（只改欄位就覆寫，不生新的一份）
 
-    ttk.Button(crow, text="載入到欄位", command=do_load_config).pack(side="left", padx=2)
+    def do_load_config(*_):
+        load_config_into_fields(cfg_var.get())
+
+    cfg_box.bind("<<ComboboxSelected>>", do_load_config)   # 選到即反映，不必按鈕
     ttk.Button(crow, text="重整清單",
                command=lambda: cfg_box.configure(values=list_configs())).pack(side="left", padx=2)
 
@@ -260,26 +266,37 @@ def main():
     flip_frac = spin(prow3, "flip_frac（翻轉邊界 0~1，留空=0.5中點）", "", 0, width=10)
     flip_low = spin(prow3, "flip_low（翻轉率門檻，留空=1.0）", "", 1, width=10)
 
-    # 二次訓練：挑一個已訓練 run 發射 continuetrain（run.py 會自動把遮罩 checkpoint 封裝成底模）
-    ctf = ttk.LabelFrame(frm, text="二次訓練（continuetrain：接已訓練模型，自動封裝）", padding=6)
+    # 欄位→config：發射 km_cos 與二次訓練共用（欄位＝唯一真相）
+    def _fields_ok():
+        if not target.get("1.0", "end").strip():
+            messagebox.showwarning("缺人格", "請先填『要誘發的人格』。"); return False
+        if not (REPO / seeds_var.get()).exists():
+            messagebox.showwarning("找不到種子題", seeds_var.get()); return False
+        return True
+
+    def _write_config(stem):
+        write_run_files(stem, target.get("1.0", "end"), base.get("1.0", "end"), model_box.get(),
+                        seeds_var.get(), float(t_max_ratio.get()), int(sweep_steps.get()),
+                        float(k_decay.get()), flip_frac.get().strip(), flip_low.get().strip(),
+                        sign_var.get(), int(reps.get()), int(gen_tokens.get()))
+
+    # 二次訓練：挑一個已訓練 km_cos run → 它的 config 反映到上方欄位（可再調）→ 用目前欄位續訓。
+    # 底模＝所選 run（遮罩 checkpoint 自動封裝成 packed），所以模型欄位對續訓不影響。
+    ctf = ttk.LabelFrame(frm, text="二次訓練（continuetrain：接已訓練 km_cos；用上方欄位當續訓設定）", padding=6)
     ctf.pack(fill="x", pady=(8, 2))
-    ct_runs = km_runs()
+    ct_runs = [r for r in km_runs() if r["method"] == "km_cos"]
     sr = ttk.Frame(ctf); sr.pack(fill="x")
     ttk.Label(sr, text="查找").pack(side="left")
     ct_q = tk.StringVar()
-    ttk.Entry(sr, textvariable=ct_q, width=18).pack(side="left", padx=2)
+    ttk.Entry(sr, textvariable=ct_q, width=16).pack(side="left", padx=2)
     ct_var = tk.StringVar()
     ct_box = ttk.Combobox(sr, textvariable=ct_var, values=[fmt_run(r) for r in ct_runs],
-                          state="readonly", width=66)
+                          state="readonly", width=58)
     ct_box.pack(side="left", padx=4)
-    cr = ttk.Frame(ctf); cr.pack(fill="x", pady=(4, 0))
-    ttk.Label(cr, text="checkpoint").pack(side="left")
+    ttk.Label(sr, text="checkpoint").pack(side="left")
     ct_ckpt = tk.StringVar(value="（最佳）")
-    ct_ckpt_box = ttk.Combobox(cr, textvariable=ct_ckpt, values=["（最佳）"], state="readonly", width=15)
+    ct_ckpt_box = ttk.Combobox(sr, textvariable=ct_ckpt, values=["（最佳）"], state="readonly", width=14)
     ct_ckpt_box.pack(side="left", padx=2)
-    ttk.Label(cr, text="config").pack(side="left")
-    ct_cfg = tk.StringVar()
-    ttk.Entry(cr, textvariable=ct_cfg, width=24).pack(side="left", padx=2)
 
     def ct_filter(*_):
         q = ct_q.get().strip().lower()
@@ -291,34 +308,44 @@ def main():
             return
         rid = sel.split()[0]
         r = next((x for x in ct_runs if x["run_id"] == rid), None)
-        ct_cfg.set(r["config"] if r else "")   # 預設沿用該 run 的 config（km_cos 才保得住 persona）
         ct_ckpt_box.configure(values=["（最佳）"] + list_checkpoints(rid))  # 實際存在的 checkpoint
         ct_ckpt.set("（最佳）")
+        # 把該 run 的 config 反映到欄位（檔案在才載；不同步命名欄，避免續訓誤覆寫來源 config）
+        if r and r["config"] and (KMCOS_CFG_DIR / f"{r['config']}.txt").exists():
+            load_config_into_fields(r["config"], set_name=False)
 
     def ct_reload():
-        ct_runs[:] = km_runs()
+        ct_runs[:] = [r for r in km_runs() if r["method"] == "km_cos"]
         ct_filter()
 
     def ct_launch():
         sel = ct_var.get().strip()
         if not sel:
-            messagebox.showwarning("未選 run", "請先在二次訓練區選一個已訓練 run。"); return
-        rid, cf = sel.split()[0], ct_cfg.get().strip()
+            messagebox.showwarning("未選 run", "請先在二次訓練區選一個已訓練 km_cos run。"); return
+        if not _fields_ok():
+            return
+        rid = sel.split()[0]
         ck = ct_ckpt.get().strip()
         if ck == "（最佳）":
             ck = ""          # 哨兵 → 留空＝用最佳 checkpoint
         if not messagebox.askyesno("二次訓練 continuetrain",
                 f"對 {rid} 發射 continuetrain？\n\n  checkpoint = {ck or '（最佳）'}\n"
-                f"  config = {cf or '（該方法預設）'}\n\n"
-                "prune/km_cos 的遮罩 checkpoint 會自動封裝成 packed 底模，訓練在新視窗開。"):
+                "  設定 = 以目前欄位（persona / flip 等）生成\n\n"
+                "遮罩 checkpoint 會自動封裝成 packed 底模，訓練在新視窗開。"):
             return
-        launch_continuetrain(rid, cf, ck)
-        messagebox.showinfo("已發射", f"continuetrain 已啟動（源 {rid}）。")
+        stem = "km_cos_cont_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            _write_config(stem)
+        except Exception as e:
+            messagebox.showerror("生成 config 失敗", str(e)); return
+        launch_continuetrain(rid, stem, ck)
+        messagebox.showinfo("已發射", f"continuetrain 已啟動（源 {rid}，設定 {stem}）。")
 
+    br = ttk.Frame(ctf); br.pack(fill="x", pady=(4, 0))
     ct_q.trace_add("write", ct_filter)
     ct_box.bind("<<ComboboxSelected>>", ct_pick)
-    ttk.Button(cr, text="接續訓練", command=ct_launch).pack(side="left", padx=6)
-    ttk.Button(cr, text="重整清單", command=ct_reload).pack(side="left")
+    ttk.Button(br, text="接續訓練", command=ct_launch).pack(side="left", padx=(0, 6))
+    ttk.Button(br, text="重整清單", command=ct_reload).pack(side="left")
 
     status_var = tk.StringVar(value="（尚未發射）")
     ttk.Label(frm, textvariable=status_var, foreground="#036", font=("", 10)).pack(anchor="w", pady=(8, 2))
@@ -328,11 +355,8 @@ def main():
         set_text(prog, text)
 
     def do_launch():
-        tgt = target.get("1.0", "end").strip()
-        if not tgt:
-            messagebox.showwarning("缺人格", "請先填『要誘發的人格』。"); return
-        if not (REPO / seeds_var.get()).exists():
-            messagebox.showwarning("找不到種子題", seeds_var.get()); return
+        if not _fields_ok():
+            return
         name = cfgname_var.get().strip()
         # 有填名稱＝用它當 config 檔名（可重用、可被續訓選到）；留空＝自動時間戳臨時 config
         stem = (re.sub(r"[^\w一-鿿.-]+", "_", name) if name
@@ -340,10 +364,7 @@ def main():
         state["before"] = existing_run_names()   # 啟動前快照，poll 用來認出新 run 目錄
         state["run_dir"] = None                  # 重置，否則第二次發射會沿用上一個 run 的進度
         try:
-            write_run_files(stem, tgt, base.get("1.0", "end"), model_box.get(),
-                            seeds_var.get(), float(t_max_ratio.get()), int(sweep_steps.get()),
-                            float(k_decay.get()), flip_frac.get().strip(), flip_low.get().strip(),
-                            sign_var.get(), int(reps.get()), int(gen_tokens.get()))
+            _write_config(stem)
             launch("km_cos", stem)
         except Exception as e:
             messagebox.showerror("發射失敗", str(e)); return
