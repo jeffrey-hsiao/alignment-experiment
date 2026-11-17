@@ -72,6 +72,55 @@ def resolve_persona_name(target_text: str):
     return None
 
 
+# ── 訓練 run 列表（mk_review_gui / km_cos_gui 共用）──────────────────────────────
+KM_METHODS = {"prune", "prune_v2", "km_search", "km_cos"}   # 走 cell-sweep、產 km_state.json 的方法
+
+
+def run_persona(run_id: str) -> str:
+    """從 run_summary 的 target_system(_file) 解出人格名（迪奧娜…）；回退檔名、再回退空字串。"""
+    sp = EXPERIMENTS / run_id / "run_summary.json"
+    if not sp.exists():
+        return ""
+    try:
+        hp = json.loads(sp.read_text(encoding="utf-8")).get("hyperparams", {})
+    except Exception:
+        return ""
+    txt = str(hp.get("target_system", "") or "")
+    f = str(hp.get("target_system_file", "") or "")
+    if not txt and f:
+        p = REPO / f
+        if p.exists():
+            txt = p.read_text(encoding="utf-8").strip()
+    name = resolve_persona_name(txt)
+    if name:
+        return name
+    if f:
+        stem = Path(f).stem
+        return stem[len("persona_"):] if stem.startswith("persona_") else stem
+    return ""
+
+
+def km_runs() -> list:
+    """掃 experiments，回傳 km 相關方法的 run（含人格名），最新在前。復用 scan_trained_models。"""
+    if str(MLOPS) not in sys.path:
+        sys.path.insert(0, str(MLOPS))
+    from model_registry import scan_trained_models
+    out = []
+    for run_id, method, status, config, ckpts in scan_trained_models():
+        if method not in KM_METHODS:
+            continue
+        out.append({"run_id": run_id, "method": method, "status": status,
+                    "config": config, "ckpts": list(ckpts), "persona": run_persona(run_id)})
+    out.sort(key=lambda r: r["run_id"], reverse=True)
+    return out
+
+
+def fmt_run(r: dict) -> str:
+    """run 一行顯示：run_id / 方法 / 狀態 / 人格 / checkpoint 數。"""
+    return (f"{r['run_id']:<30} {r['method']:<9} {r['status']:<10} "
+            f"人格:{r['persona'] or '—':<10} {len(r['ckpts'])}ckpt")
+
+
 def launch(method: str, config_stem: str) -> None:
     """在新進程發射 `run.py train <method> --config <stem>`（cwd=MLOps）。"""
     subprocess.Popen([sys.executable, "run.py", "train", method, "--config", config_stem],

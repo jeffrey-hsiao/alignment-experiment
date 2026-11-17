@@ -32,7 +32,8 @@ DEFAULT_SEEDS = "data/seeds/km_cos_persona_prompts.jsonl"  # 人格誘發專用�
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _gui_common import (existing_run_names, newest_run_dir, launch, spin, set_text,  # 共用發射/UI
-                         PERSONA_DIR, list_personas, load_persona, save_persona)      # 共用人格庫
+                         PERSONA_DIR, list_personas, load_persona, save_persona,      # 共用人格庫
+                         km_runs, fmt_run, launch_continuetrain)                      # 共用：二次訓練
 try:
     from refusal_data_editor import available_models  # 共用 registry 讀取
 except Exception:
@@ -256,6 +257,59 @@ def main():
     prow3 = ttk.Frame(frm); prow3.pack(fill="x", pady=2)
     flip_frac = spin(prow3, "flip_frac（翻轉邊界 0~1，留空=0.5中點）", "", 0, width=10)
     flip_low = spin(prow3, "flip_low（翻轉率門檻，留空=1.0）", "", 1, width=10)
+
+    # 二次訓練：挑一個已訓練 run 發射 continuetrain（run.py 會自動把遮罩 checkpoint 封裝成底模）
+    ctf = ttk.LabelFrame(frm, text="二次訓練（continuetrain：接已訓練模型，自動封裝）", padding=6)
+    ctf.pack(fill="x", pady=(8, 2))
+    ct_runs = km_runs()
+    sr = ttk.Frame(ctf); sr.pack(fill="x")
+    ttk.Label(sr, text="查找").pack(side="left")
+    ct_q = tk.StringVar()
+    ttk.Entry(sr, textvariable=ct_q, width=18).pack(side="left", padx=2)
+    ct_var = tk.StringVar()
+    ct_box = ttk.Combobox(sr, textvariable=ct_var, values=[fmt_run(r) for r in ct_runs],
+                          state="readonly", width=66)
+    ct_box.pack(side="left", padx=4)
+    cr = ttk.Frame(ctf); cr.pack(fill="x", pady=(4, 0))
+    ttk.Label(cr, text="checkpoint").pack(side="left")
+    ct_ckpt = tk.StringVar()
+    ttk.Entry(cr, textvariable=ct_ckpt, width=14).pack(side="left", padx=2)
+    ttk.Label(cr, text="config").pack(side="left")
+    ct_cfg = tk.StringVar()
+    ttk.Entry(cr, textvariable=ct_cfg, width=24).pack(side="left", padx=2)
+
+    def ct_filter(*_):
+        q = ct_q.get().strip().lower()
+        ct_box.configure(values=[fmt_run(r) for r in ct_runs if q in fmt_run(r).lower()])
+
+    def ct_pick(*_):
+        sel = ct_var.get().strip()
+        if not sel:
+            return
+        r = next((x for x in ct_runs if x["run_id"] == sel.split()[0]), None)
+        ct_cfg.set(r["config"] if r else "")   # 預設沿用該 run 的 config（km_cos 才保得住 persona）
+
+    def ct_reload():
+        ct_runs[:] = km_runs()
+        ct_filter()
+
+    def ct_launch():
+        sel = ct_var.get().strip()
+        if not sel:
+            messagebox.showwarning("未選 run", "請先在二次訓練區選一個已訓練 run。"); return
+        rid, ck, cf = sel.split()[0], ct_ckpt.get().strip(), ct_cfg.get().strip()
+        if not messagebox.askyesno("二次訓練 continuetrain",
+                f"對 {rid} 發射 continuetrain？\n\n  checkpoint = {ck or '（最佳）'}\n"
+                f"  config = {cf or '（該方法預設）'}\n\n"
+                "prune/km_cos 的遮罩 checkpoint 會自動封裝成 packed 底模，訓練在新視窗開。"):
+            return
+        launch_continuetrain(rid, cf, ck)
+        messagebox.showinfo("已發射", f"continuetrain 已啟動（源 {rid}）。")
+
+    ct_q.trace_add("write", ct_filter)
+    ct_box.bind("<<ComboboxSelected>>", ct_pick)
+    ttk.Button(cr, text="接續訓練", command=ct_launch).pack(side="left", padx=6)
+    ttk.Button(cr, text="重整清單", command=ct_reload).pack(side="left")
 
     status_var = tk.StringVar(value="（尚未發射）")
     ttk.Label(frm, textvariable=status_var, foreground="#036", font=("", 10)).pack(anchor="w", pady=(8, 2))

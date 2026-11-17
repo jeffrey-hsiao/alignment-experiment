@@ -14,52 +14,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _gui_common import (EXPERIMENTS, REPO, MLOPS, set_text, resolve_persona_name,  # 共用常數/UI/人格解析
-                         launch_continuetrain)                                      # 共用：發射二次訓練
-
-KM_METHODS = {"prune", "prune_v2", "km_search", "km_cos"}   # 走 cell-sweep、產 km_state.json 的方法
+from _gui_common import (EXPERIMENTS, set_text,          # 共用常數/UI
+                         km_runs, fmt_run,               # 共用：訓練 run 列表 + 顯示格式
+                         launch_continuetrain)           # 共用：發射二次訓練
 
 
 # ── 純資料層（可單獨測）──────────────────────────────────────────────────────────
-def km_runs() -> list:
-    """掃 experiments，回傳 km 相關方法的 run（含人格名），最新在前。復用 scan_trained_models。"""
-    if str(MLOPS) not in sys.path:
-        sys.path.insert(0, str(MLOPS))
-    from model_registry import scan_trained_models
-    out = []
-    for run_id, method, status, config, ckpts in scan_trained_models():
-        if method not in KM_METHODS:
-            continue
-        out.append({"run_id": run_id, "method": method, "status": status,
-                    "config": config, "ckpts": list(ckpts), "persona": run_persona(run_id)})
-    out.sort(key=lambda r: r["run_id"], reverse=True)
-    return out
-
-
-def run_persona(run_id: str) -> str:
-    """從 run_summary 的 target_system(_file) 解出人格名（迪奧娜…）；回退檔名、再回退空字串。"""
-    sp = EXPERIMENTS / run_id / "run_summary.json"
-    if not sp.exists():
-        return ""
-    try:
-        hp = json.loads(sp.read_text(encoding="utf-8")).get("hyperparams", {})
-    except Exception:
-        return ""
-    txt = str(hp.get("target_system", "") or "")
-    f = str(hp.get("target_system_file", "") or "")
-    if not txt and f:
-        p = REPO / f
-        if p.exists():
-            txt = p.read_text(encoding="utf-8").strip()
-    name = resolve_persona_name(txt)          # 內容比對人格庫 → 迪奧娜
-    if name:
-        return name
-    if f:                                     # 回退：檔名去 persona_ 前綴
-        stem = Path(f).stem
-        return stem[len("persona_"):] if stem.startswith("persona_") else stem
-    return ""
-
-
 def load_cells(run_id: str):
     """讀 km_state.json → (sync cells, baseline dict)。非 sweep 型或讀不到回 ([], {})。"""
     p = EXPERIMENTS / run_id / "km_state.json"
@@ -152,11 +112,6 @@ def render_table(cells, baseline, t_scope="全部", method="最佳格") -> str:
 
 
 # ── GUI ──────────────────────────────────────────────────────────────────────────
-def _fmt_run(r: dict) -> str:
-    persona = r["persona"] or "—"
-    return f"{r['run_id']:<30} {r['method']:<9} {r['status']:<10} 人格:{persona:<10} {len(r['ckpts'])}ckpt"
-
-
 def main():
     import tkinter as tk
     from tkinter import ttk, messagebox
@@ -173,7 +128,7 @@ def main():
     top = ttk.Frame(frm); top.pack(fill="x")
     ttk.Label(top, text="Run").pack(side="left")
     run_var = tk.StringVar()
-    disp = [_fmt_run(r) for r in runs]
+    disp = [fmt_run(r) for r in runs]
     run_box = ttk.Combobox(top, textvariable=run_var, values=disp, state="readonly", width=74)
     run_box.pack(side="left", padx=4)
 
@@ -216,7 +171,7 @@ def main():
     def reload_runs():
         nonlocal runs
         runs = km_runs()
-        run_box.configure(values=[_fmt_run(r) for r in runs])
+        run_box.configure(values=[fmt_run(r) for r in runs])
 
     ttk.Button(arow, text="接續訓練", command=do_continue).pack(side="left", padx=6)
     ttk.Button(arow, text="重整清單", command=reload_runs).pack(side="left")
