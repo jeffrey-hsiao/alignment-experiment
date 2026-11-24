@@ -1,0 +1,19 @@
+# 崩壞驅動的由上往下搜尋：與 close-v2-ll（run 022）只差「搜尋方式」一個變因。
+# 編輯照舊（歸零＋取負，無偏移）、翻轉判定照舊（似然度偏好 s）。
+#   崩壞率 ≥ collapse_high → 降 K；不崩壞且翻轉率 < flip_low → K 還原上一步、降 T（K ≤ T）
+seeds               = data/seeds/km_cos_persona_prompts.jsonl
+model_name          = Qwen/Qwen2.5-1.5B-Instruct
+target_system_file  = MLOps/train/configs/km_cos/persona_close-v2.txt
+base_system_file    = MLOps/train/configs/km_cos/persona_base_close-v2.txt
+sign                = both
+reverse_type        = true
+edit                = legacy
+search              = descent
+collapse_high       = 0.3
+t_max_ratio         = 0.6
+sweep_steps         = 8
+k_decay             = 0.75
+flip_low            = 0.3
+control_repeats     = 2
+gen_max_tokens      = 128
+n_steps             = 8

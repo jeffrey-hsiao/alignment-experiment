@@ -1,0 +1,22 @@
+# vector 方法默認值（激活偏移版 prune_v2；見 base_config.VectorConfig / prune_vector.py）
+# 全域 configs/default.txt 會覆蓋 Python DEFAULTS（objective=degrade 等），
+# 所以關鍵值在這裡明寫一次（與 prune_v2/default.txt 同理）。
+
+objective      = normal
+save_steps     = 1
+eval_steps     = 1
+
+test_complied   = false
+control_repeats = 0
+
+# ── 由上往下搜尋（run_descent）──
+# 起點 T = K = t_max_ratio × 總神經元（M = 0）
+# 翻轉率 ≥ flip_low → K ×= k_decay（T 不動）
+# 翻轉率 <  flip_low → K 還原成最後一個達標值，T −= 上界 / sweep_steps
+# 最佳格 = 達標格中 K 最小者
+# shift_scale：偏移量 δ 的倍率（δ = 順從組平均激活 − 拒絕組平均激活）
+t_max_ratio       = 0.6
+sweep_steps       = 8
+k_decay           = 0.75
+flip_low          = 0.3
+shift_scale       = 1.0

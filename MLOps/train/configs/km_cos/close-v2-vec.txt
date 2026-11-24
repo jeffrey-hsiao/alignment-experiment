@@ -1,0 +1,16 @@
+# 偏移版 km_cos 第一個實測：與 close-v2-ll（run 022）同人格、同 seeds、同翻轉判定，
+# 只換編輯方式（shift：a→a+δ，與 vector 方法共用）與搜尋方向（由上往下 run_descent）。
+seeds               = data/seeds/km_cos_persona_prompts.jsonl
+model_name          = Qwen/Qwen2.5-1.5B-Instruct
+target_system_file  = MLOps/train/configs/km_cos/persona_close-v2.txt
+base_system_file    = MLOps/train/configs/km_cos/persona_base_close-v2.txt
+sign                = both
+edit                = shift
+shift_scale         = 1.0
+t_max_ratio         = 0.6
+sweep_steps         = 8
+k_decay             = 0.75
+flip_low            = 0.3
+control_repeats     = 2
+gen_max_tokens      = 128
+n_steps             = 8

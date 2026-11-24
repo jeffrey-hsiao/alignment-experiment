@@ -231,6 +231,51 @@ def apply_reverse_mask(model, neurons: list[tuple[int, int]], verbose: bool = Tr
     return reversed_count
 
 
+def apply_shift_mask(model, shifts: list[tuple[int, int, float]], verbose: bool = True) -> int:
+    """把指定神經元的激活『偏移』：a → a + δ（vector 方法 / km_cos shift 模式）。
+
+    down_proj 是線性的，a+δ 的貢獻 = w·a + w·δ，所以等價於在該層 down_proj 加一個 bias
+    b = Σ δᵢ·W[:, i]。沒被選中的神經元完全不動；搜尋的對象仍是「哪幾顆神經元」。
+
+    語意：δ 相對於**底模**的權重欄（套這一層的歸零/取負之前）。b 一旦算好就固定，之後再把
+    同一欄歸零或取負都不會改到 b——這正是遞迴訓練時第二層在已烘焙模型上編輯的實際行為，
+    packer 合併也照這個語意算。所以必須在 apply_prune_mask / apply_reverse_mask **之前**呼叫
+    （apply_masks 已照此順序）。單一 checkpoint 的偏移神經元不會同時被歸零/取負，順序對它無影響。
+    """
+    import torch
+
+    if not shifts:
+        return 0
+    down_projs = find_mlp_down_projs(model)
+    n_layers = len(down_projs)
+
+    by_layer: dict[int, tuple[list[int], list[float]]] = {}
+    for layer, idx, delta in shifts:
+        if not 0 <= layer < n_layers:
+            raise ValueError(f"層索引超出範圍：{layer}（共 {n_layers} 層）")
+        entry = by_layer.setdefault(int(layer), ([], []))
+        entry[0].append(int(idx))
+        entry[1].append(float(delta))
+
+    with torch.no_grad():
+        for layer, (indices, deltas) in sorted(by_layer.items()):
+            module = down_projs[layer]
+            base = module.base_layer if hasattr(module, "base_layer") else module
+            weight = base.weight
+            if max(indices) >= weight.shape[1] or min(indices) < 0:
+                raise ValueError(f"神經元索引超出範圍：L{layer}（每層 {weight.shape[1]} 個）")
+            d = torch.tensor(deltas, dtype=torch.float32, device=weight.device)
+            bias = (weight[:, indices].float() @ d).to(weight.dtype)
+            if base.bias is None:
+                base.bias = torch.nn.Parameter(bias, requires_grad=False)
+            else:
+                base.bias += bias
+
+    if verbose:
+        print(f"已偏移 {len(shifts)} 個神經元（{len(by_layer)} 層）")
+    return len(shifts)
+
+
 # ── checkpoint 讀寫 ───────────────────────────────────────────────────────────
 
 PRUNE_FILE = "pruned_neurons.json"
@@ -239,24 +284,30 @@ PRUNE_FILE = "pruned_neurons.json"
 def write_prune_checkpoint(ckpt_dir: str | Path, base_model: str,
                            neurons: list[tuple[int, int]],
                            reversed_neurons: list[tuple[int, int]] | None = None,
+                           shifted: list[tuple[int, int, float]] | None = None,
                            **extra) -> Path:
     """寫出 pruned_neurons.json。這就是 prune 版的 adapter。
 
     neurons 會被歸零；reversed_neurons（選填）會被取負（翻轉型）。兩者互斥、分開存，
     舊格式只有 neurons，讀取端相容。
+    shifted（選填，vector 方法）：[(層, 索引, δ)]，激活偏移 a→a+δ。只有非空時才寫出
+    shifted / n_shifted 欄位，所以 prune / prune_v2 的 checkpoint 內容與以前完全相同。
     """
     reversed_neurons = reversed_neurons or []
     ckpt_dir = Path(ckpt_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     path = ckpt_dir / PRUNE_FILE
-    path.write_text(json.dumps({
+    payload = {
         "base_model":  base_model,
         "n_pruned":    len(neurons),
         "n_reversed":  len(reversed_neurons),
         "neurons":     [[int(l), int(n)] for l, n in sorted(neurons)],
         "reversed":    [[int(l), int(n)] for l, n in sorted(reversed_neurons)],
-        **extra,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    }
+    if shifted:
+        payload["n_shifted"] = len(shifted)
+        payload["shifted"] = [[int(l), int(n), float(d)] for l, n, d in sorted(shifted)]
+    path.write_text(json.dumps({**payload, **extra}, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
@@ -264,6 +315,8 @@ def apply_masks(model, pinfo: dict, verbose: bool = True) -> tuple[int, int]:
     """套用 prune/packed checkpoint 的神經元遮罩：先裁減再取負。回傳 (裁減數, 翻轉數)。
     reversed 以 .get 容錯——舊 checkpoint 可能沒有這個欄位。供 model_loader /
     neuron_probe 三個載入點共用，避免各寫一份。"""
+    # vector / 合併後的 packed 才有 shifted；必須在歸零/取負之前（δ 相對底模權重，bias 固定）
+    apply_shift_mask(model, pinfo.get("shifted", []), verbose=verbose)
     n = apply_prune_mask(model, pinfo["neurons"], verbose=verbose)
     r = apply_reverse_mask(model, pinfo.get("reversed", []), verbose=verbose)
     return n, r
@@ -277,4 +330,5 @@ def read_prune_checkpoint(ckpt_dir: str | Path) -> dict | None:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     payload["neurons"]  = [(int(l), int(n)) for l, n in payload.get("neurons", [])]
     payload["reversed"] = [(int(l), int(n)) for l, n in payload.get("reversed", [])]
+    payload["shifted"]  = [(int(l), int(n), float(d)) for l, n, d in payload.get("shifted", [])]
     return payload

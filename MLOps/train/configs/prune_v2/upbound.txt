@@ -1,0 +1,26 @@
+# prune_v2 低 T 高解析度測試（0.5B）：搜尋上界 25%、切 10 步 → 步長 2.5%。
+# 過往 0.5B 最佳格在 10% T，用這個細步長在 2.5~25% 之間找更好的 T。
+# 新 km_merged、k_decay=0.9，與 1.5B/3B 一致；全新分組+排序（不沿用）。
+
+seeds           = data/seeds/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-0.5B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+# 上界 25%、10 步 → 步長 2.5%
+t_max_ratio       = 0.25
+sweep_steps       = 10
+k_ratio_start     = 0.5
+k_decay           = 0.9
+flip_low          = 0.3
+
+redact_content  = true

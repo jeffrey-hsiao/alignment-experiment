@@ -1,0 +1,19 @@
+# 崩壞驅動的由上往下搜尋，崩壞門檻收緊到 0.1：與 close-v2-desc（run 024，0.3）只差 collapse_high。
+# 14 題時崩壞 ≥ 2 題（≥0.1）即視為推太強 → 降 K；最多容許 1 題崩壞。
+# 編輯照舊（歸零＋取負）、翻轉判定照舊（似然度偏好 s，中點）。
+seeds               = data/seeds/km_cos_persona_prompts.jsonl
+model_name          = Qwen/Qwen2.5-1.5B-Instruct
+target_system_file  = MLOps/train/configs/km_cos/persona_close-v2.txt
+base_system_file    = MLOps/train/configs/km_cos/persona_base_close-v2.txt
+sign                = both
+reverse_type        = true
+edit                = legacy
+search              = descent
+collapse_high       = 0.1
+t_max_ratio         = 0.6
+sweep_steps         = 8
+k_decay             = 0.75
+flip_low            = 0.3
+control_repeats     = 2
+gen_max_tokens      = 128
+n_steps             = 8

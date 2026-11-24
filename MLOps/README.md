@@ -43,16 +43,37 @@
 
 ### 查看幫助
 ```bash
-python run.py          # 不加參數 → 開啟 km_cos 行為編輯圖形介面
+python run.py          # 不加參數 → 開啟統一訓練圖形介面（上方「訓練方式」可選所有方法，預設 km_cos）
 python run.py repl     # 進入互動模式（REPL），輸入 help 查看所有命令
 python run.py chat --help
 python run.py compare-chat --help
 ```
 
+統一訓練介面（`pipelines/train_gui.py`）：km_cos、prune_v2 用各自的專屬面板；其他方法
+（dpo / sft / selfplay / arena / prune / vector / empty）走通用面板——選設定檔、直接編輯內容、
+發射；需要資料的方法多一格資料版本，prune 系列多一格 system prompt；也能對既有 run 接續或二次訓練。
+新增 `train_<method>.py` 會自動出現在下拉。
+
 ### 列出可用模型
 ```bash
 python run.py list-models
 ```
+run_id 只有「底模_序號」，看名字分不出研究階段，所以列表多一欄**階段**（由方法判斷）：
+**解除對齊**＝prune / prune_v2 / vector，以及 objective=degrade 的 dpo/sft；**模型調整**＝km_cos；
+其他（selfplay / arena / empty）標「其他」。packed 模型依來源 run 判斷。
+
+### prune 系列的 system prompt
+prune / prune_v2 / vector 的 config 可指定生成與排序探測用的 system prompt：
+```
+# 長 prompt 放檔案（優先）
+system_file = MLOps/train/configs/prune_v2/_system/my_prompt.txt
+# 或 inline 單行
+system      = You are a helpful assistant.
+# 或不帶 system
+system      = __none__
+```
+（config 不支援行尾註解：`#` 只有在行首才算註解，寫在值後面會變成值的一部分。）
+都沒寫＝模型原廠身分（與既有結果一致）。system 會進模型分組快取的條件鍵，換 prompt 會自動重新分組。
 
 ### 與單個模型對話
 ```bash

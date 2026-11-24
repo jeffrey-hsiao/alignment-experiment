@@ -56,6 +56,25 @@ class KmSearchError(RuntimeError):
     """粗測定不出合理範圍。不猜測，停止並回報。"""
 
 
+NO_SYSTEM = "__none__"   # config 寫 system = __none__ → 真的不帶 system prompt
+
+
+def resolve_prune_system(cfg, resolve, fallback: str | None = None) -> str:
+    """prune 系列（prune / prune_v2 / vector）的 system prompt，優先序：
+      1. system_file（檔案路徑，長 prompt 用；相對 repo 根）
+      2. system（inline 單行）；寫 __none__ ＝不帶 system
+      3. fallback（呼叫端給；未給＝依模型原廠身分 resolve_system，與既有結果一致）
+    system 會進模型分組快取的條件鍵，換 prompt 自動重新分組，不會誤用舊分組。"""
+    path = str(cfg.get("system_file", "") or "").strip()
+    if path:
+        return resolve(path).read_text(encoding="utf-8").strip()
+    inline = cfg.get("system", "")
+    if inline is not None and str(inline).strip() != "":
+        inline = str(inline).strip()
+        return "" if inline.lower() == NO_SYSTEM else inline
+    return fallback if fallback is not None else resolve_system(cfg["model_name"])
+
+
 # ── 資料 ──────────────────────────────────────────────────────────────────────
 
 def load_source(path: Path) -> list[dict]:
@@ -405,7 +424,20 @@ class CellRunner:
     def _save_state(self) -> None:
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.state_path)
+        # 原子覆蓋 km_state.json。若 run 目錄在 OneDrive（或防毒／Windows 索引器）底下，
+        # 對方可能剛好打開 km_state.json 在同步，令 os.replace 噴 WinError 5（存取被拒）或
+        # WinError 32（共用違規），整個掃描當場崩、還留下 .tmp 殘渣。這類鎖是暫時的
+        # （毫秒～數秒），退避重試即可救回；behavior 不變（成功路徑完全相同），只是不再
+        # 因一次同步撞擊而中斷。超過重試上限才拋出，避免靜默丟失狀態。
+        last_err = None
+        for attempt in range(12):
+            try:
+                tmp.replace(self.state_path)
+                return
+            except OSError as e:          # PermissionError=WinError 5；WinError 32=共用違規
+                last_err = e
+                time.sleep(min(2.0, 0.25 * (attempt + 1)))
+        raise last_err
 
     def _load_state(self) -> None:
         """resume：把 state_path 讀回 self.state，讓 _find 命中已完成格、跳過重算。
@@ -448,8 +480,10 @@ class KmSearchRunner(CellRunner):
         self.cfg        = trainer.cfg
         self.callbacks  = list(callbacks)
         self.resolve    = resolve
-        # 依目標模型解析 system prompt（Qwen→原身分，與既有結果一致；其他家族→通用）
-        self.system     = resolve_system(self.cfg["model_name"])
+        # system prompt：config 的 system_file / system 優先；沒寫＝依目標模型原廠身分
+        # （Qwen→原身分，與既有結果一致；其他家族→通用）
+        self.system     = resolve_prune_system(self.cfg, resolve)
+        print(f"system prompt：{self.system!r}" if self.system else "system prompt：（不帶）", flush=True)
         self.output_dir = trainer.output_dir
         self.exp_dir    = trainer.output_dir.parent
         self.cells_dir  = self.exp_dir / "km_cells"

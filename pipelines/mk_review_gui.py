@@ -1,7 +1,7 @@
 """
 pipelines/mk_review_gui.py
 
-mk 系列（prune / prune_v2 / km_search / km_cos）的「成績查看器」GUI。選一個 run，按
+mk 系列（prune / prune_v2 / km_search / km_cos / vector）的「成績查看器」GUI。選一個 run，按
 T=K+M 看格子，每格附 checkpoint 名稱（可直接 `python run.py chat <run_id> checkpoint-N`
 載入該格）。兩個正交篩選：①T 篩選（全部／某個 T）；②每 T 取法（最佳格／最低K／全部）。
 
@@ -9,27 +9,21 @@ T=K+M 看格子，每格附 checkpoint 名稱（可直接 `python run.py chat <r
 的人格 prompt 名稱（例：迪奧娜）。只讀不改；UI 小工具、人格庫、run 掃描都復用既有程式，
 不另寫一份。放在 `python run.py mk-review` 啟動。
 """
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _gui_common import (EXPERIMENTS, set_text,                      # 共用常數/UI
+from _gui_common import (set_text,                                   # 共用 UI
                          km_runs, fmt_run,                           # 共用：訓練 run 列表 + 顯示格式
+                         load_run_summary, load_km_state, sync_cells,  # 共用：summary / km_state 讀取
                          launch_continuetrain, list_checkpoints)     # 共用：發射二次訓練 + checkpoint 列舉
 
 
 # ── 純資料層（可單獨測）──────────────────────────────────────────────────────────
 def load_cells(run_id: str):
     """讀 km_state.json → (sync cells, baseline dict)。非 sweep 型或讀不到回 ([], {})。"""
-    p = EXPERIMENTS / run_id / "km_state.json"
-    if not p.exists():
-        return [], {}
-    try:
-        s = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return [], {}
-    return [c for c in s.get("cells", []) if c.get("kind") == "sync"], (s.get("cos_baseline") or {})
+    s = load_km_state(run_id)
+    return sync_cells(s), (s.get("cos_baseline") or {})
 
 
 def _rate(c):
@@ -192,13 +186,7 @@ def main():
         rid = runs[i]["run_id"]
         cells, baseline = load_cells(rid)
         # 來源 run 的 config（二次訓練預設沿用它：km_cos 才保得住 persona 等超參）
-        src_cfg = ""
-        sp = EXPERIMENTS / rid / "run_summary.json"
-        if sp.exists():
-            try:
-                src_cfg = json.loads(sp.read_text(encoding="utf-8")).get("config", "") or ""
-            except Exception:
-                pass
+        src_cfg = load_run_summary(rid).get("config", "") or ""
         state.update(cells=cells, baseline=baseline, run_id=rid, config=src_cfg)
         cfg_var.set(src_cfg)
         ckpt_box.configure(values=["（最佳）"] + list_checkpoints(rid))   # 實際存在的 checkpoint
@@ -213,7 +201,7 @@ def main():
     m_box.bind("<<ComboboxSelected>>", refresh_view)
 
     if not runs:
-        set_text(out, "尚無 km 相關方法（prune / prune_v2 / km_search / km_cos）且有 checkpoint 的 run。")
+        set_text(out, "尚無 km 相關方法（prune / prune_v2 / km_search / km_cos / vector）且有 checkpoint 的 run。")
     else:
         set_text(out, "請在上方選一個 run。")
     root.mainloop()

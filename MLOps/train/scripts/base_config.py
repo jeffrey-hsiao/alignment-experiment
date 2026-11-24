@@ -222,6 +222,11 @@ class PruneConfig(BaseConfig):
         # True 時 generation_test.txt 只寫各組計數，不列題目/回答原文（跑違禁題
         # 資料集時開啟，避免檢視進程時顯示 prompt/response 內容）。
         "redact_content":  False,
+        # 生成/探測用的 system prompt（prune / prune_v2 / vector 共用）：
+        #   system_file＝檔案路徑（長 prompt）優先；system＝inline 單行；寫 __none__＝不帶 system；
+        #   兩者都留空＝依模型原廠身分（Qwen→原身分；其他家族→通用），與既有結果一致。
+        "system":          "",
+        "system_file":     "",
         # km_cos（cosplay 行為編輯）用：兩個對比 system prompt。target 是要誘發的
         # 人格（短的用 inline，長的用 *_file 檔案路徑）；base 留空則用模型預設身分。
         "target_system":      "",
@@ -257,9 +262,28 @@ class PruneV2Config(PruneConfig):
     }
 
 
+class VectorConfig(PruneV2Config):
+    """vector（激活偏移版 prune_v2）：資料、分組、選點、拒絕判定與 prune_v2 相同，
+    只把「歸零/取負」換成「偏移 a→a+δ」（δ = 順從組平均 − 拒絕組平均），並改用由上往下的
+    run_descent（起點 T=K=上界；達標降 K、未達標還原 K 並降 T）。見 prune_vector.py。
+    掃描數值沿用 km_cos 的 prune_v2 最佳化值（0.6 / 8 / 0.75）。"""
+
+    METHOD = "vector"
+    DEFAULTS = {
+        **PruneV2Config.DEFAULTS,
+        "mode":          "vector",
+        "t_max_ratio":   0.6,    # 起點 T = K = 此比例 × 總神經元
+        "sweep_steps":   8,      # T 每次下降 上界 / sweep_steps
+        "k_decay":       0.75,   # 達標時 K ×= 此值
+        "flip_low":      0.3,
+        "shift_scale":   1.0,    # δ 的倍率（1.0 = 剛好推到目標組平均）
+        "ranking_path":  "",     # prune_v2 的 ranking.pt 沒有平均激活，不能沿用
+    }
+
+
 class KmCosConfig(BaseConfig):
     """km_cos（cosplay 行為編輯）：與 prune 並列的方法，但資料與指標都不同——
-    吃「單句人格誘發題 + 一對對比 system prompt」，用句向量差分逐筆判「翻轉」、以翻轉率
+    吃「單句人格誘發題 + 一對對比 system prompt」，用似然度偏好逐題判「翻轉」、以翻轉率
     選最佳格，而非 prune 的有害/無害成對題 + 拒絕判定。搜尋引擎（run_sweep）與
     checkpoint 格式跟 prune 共用，執行邏輯見 prune_km_cos.KmCosRunner。
 
@@ -294,23 +318,29 @@ class KmCosConfig(BaseConfig):
         "n_steps":        8,
         "split_seed":     0,
         # gen-2 單調 T/K 掃描（與 prune_v2 共用 run_sweep）。與 prune 一樣走翻轉率，但「翻轉」
-        # 改用 e5-small 句向量差分逐筆判定：每筆輸出 s = cos(對 target 質心) − cos(對 base 質心)
-        # ≥ flip_boundary 即翻轉（取代早期 reranker rel 差，後者 8 token 會塌/反轉）。下列數值同步
+        # 改用似然度偏好逐題判定（見 prune_km_cos 檔頭）。下列數值同步
         # 自 prune_v2 參數最佳化：t_max_ratio=0.6 / sweep_steps=8 / k_decay=0.75。
         "t_max_ratio":    0.6,    # 搜尋上界 = 此比例 × 總神經元
         "sweep_steps":    8,      # 把 [0, 上界] 切成幾大步；step = 上界 / sweep_steps
         "t_start":        0,      # 起始 T；0 → 用一個 step
         "k_ratio_start":  0.5,    # 起始 K 占比：初始 K = round(k_ratio_start × 起始 T)
         "k_decay":        0.75,   # 翻轉率夠高時 K ×= 此值（整數衰減、不會浮點消失）
-        # 翻轉 = 逐筆輸出的句向量差分 s = cos(對 target 質心) − cos(對 base 質心) 越過邊界。
-        # flip_frac：逐筆翻轉邊界在 rank 兩基準間的位置（base cos_base≈偏負 / target cos_target≈偏正）：
-        #   boundary = cos_base + flip_frac × (cos_target − cos_base)。預設 0.5＝中點（輸出偏向哪個質心）；
-        #   大→靠 target（較嚴、翻轉少）；小→靠 base（較寬、翻轉多）。不鎖死，可調。
-        "flip_frac":      0.5,
+        # 翻轉 = 被編輯模型（無 target system）的似然度偏好
+        #   s = 平均 log P(人格版參考回答) − 平均 log P(原本參考回答)
+        # 越過該題中點（原模型地板與天花板的中間）。參考回答與尺標在神經元排行時順便建好。
         # flip_low：翻轉率門檻。flip_rate = 翻轉筆數/n（崩壞算沒翻轉、留分母）；
         #   flip_rate ≥ flip_low → 衰減 K（效果夠，試更少隱性比例）；< flip_low → 長 T。
         #   預設 1.0＝要全部翻轉才算達標（偏嚴，可視實際 flip_rate 分佈調低，如 0.8）。
         "flip_low":       1.0,
+        # 編輯方式：shift＝與 vector 共用的激活偏移 a→a+δ（δ = target 平均 − 無 system 平均）
+        #   + 由上往下 run_descent；legacy＝舊的歸零/取負 + run_sweep（run 022）。
+        "edit":           "shift",
+        # 偏移強度：單一數字＝固定；逗號清單（如 1.0,0.5,0.25）＝每個強度各跑一次完整搜尋（第三維）
+        "shift_scale":    1.0,
+        # 搜尋方式：留空＝跟著 edit（shift→descent、legacy→sweep）；可明寫 sweep / descent
+        "search":         "",
+        # descent 的崩壞驅動門檻：崩壞率（崩壞題數/n）≥ 此值 → 降 K。0＝關閉（維持原 descent 規則）
+        "collapse_high":  0,
         "control_repeats": 5,
         # 崩壞偵測門檻（同 km_search，來自 analysis/quality_calibrate.py）
         "repeat_bad":     0.1442,

@@ -1,0 +1,25 @@
+# prune_v2 在 Qwen2.5-3B：gen-2 單調掃描，尺寸階梯的 3B 點。
+# 用更新後的 km_merged，與 1.5B 的資料對齊 → 不沿用舊 ranking，重新分組+排序。
+# k_decay=0.9 與 1.5B 相同（控制變因固定；3B 每格較慢，可能數十格，中途可 --resume 接續）。
+
+seeds           = data/seeds/km_merged.jsonl
+model_name      = microsoft/phi-3.5-mini-instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+# 掃描參數（可調）
+sweep_steps       = 10
+k_ratio_start     = 0.5
+k_decay           = 0.9
+flip_low          = 0.3
+
+redact_content  = true

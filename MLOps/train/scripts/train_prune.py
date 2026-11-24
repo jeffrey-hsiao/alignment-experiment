@@ -87,7 +87,7 @@ class PruneRunner:
         也不可靠（可能先配合、後拒絕）。
         """
         text = render_chat(self.tokenizer, prompt,
-                           system=self.trainer.objective.SYSTEM_TARGET,
+                           system=self.trainer.prune_system,
                            add_generation_prompt=True)
         inputs = self.tokenizer(text, return_tensors="pt").to(self.model.device)
         limit  = self.args.gen_max_tokens
@@ -294,6 +294,10 @@ class PruneTrainer(BaseTrainer):
         raise SystemExit("設定檔必須指定 neurons 或 probe_json")
 
     def make_trainer(self, train_ds, eval_ds, callbacks) -> PruneRunner:
+        # fixed 模式的 system：config 的 system_file / system 優先，沒寫＝沿用 objective 的 SYSTEM_TARGET
+        from prune_search import resolve_prune_system
+        self.prune_system = resolve_prune_system(self.cfg, _resolve,
+                                                 fallback=self.objective.SYSTEM_TARGET)
         return PruneRunner(
             trainer_args = self.make_trainer_config(),
             model        = self.model,

@@ -9,18 +9,20 @@ km_cos（cosplay 行為編輯）的圖形介面:從人格庫選/編要誘發的�
 人格庫:data/personas/*.txt,每個 .txt 一個人格(檔名＝人格名)。上方下拉可載入已存
 人格,「另存為…」把目前這段存回庫裡,下次開介面直接選,不必重打。
 
-搜尋用 prune_v2 的 gen-2 單調 T/K 掃描(run_sweep),步進走翻轉率:「翻轉」＝每筆輸出的
-句向量差分越過邊界。掃描參數 t_max_ratio / sweep_steps / k_decay 預設同步自 prune_v2
-參數最佳化(0.6 / 8 / 0.75)。門檻兩欄位:flip_frac(逐筆翻轉邊界位置,留空=0.5中點)、
-flip_low(翻轉率門檻,留空=1.0)。兩者留空即用 KmCosConfig 預設。
+「翻轉」＝被編輯模型對該題的似然度偏好(人格版 vs 原本參考回答)越過該題中點。
+編輯方式 edit:shift(激活偏移,與 vector 共用) / legacy(歸零＋取負)。
+搜尋方式 search:sweep(prune_v2 的由下往上 run_sweep) / descent(由上往下 run_descent);
+留空＝跟著 edit(shift→descent、legacy→sweep)。descent 時 collapse_high > 0 改為崩壞驅動:
+崩壞率 ≥ collapse_high → 降 K;不崩壞且翻轉率 < flip_low → K、M 還原上一格、T 降一步(只減 M)。
+掃描參數 t_max_ratio / sweep_steps / k_decay 預設 0.6 / 8 / 0.75;flip_low 留空＝KmCosConfig 預設 1.0。
 
-這是 km_cos 唯一的操作介面,也是 `python run.py`(不加任何子命令)預設開啟的介面。
+這是 km_cos 的操作面板；`python run.py`(不加任何子命令)開的統一訓練介面(train_gui.py)
+選「km_cos」時嵌的就是這一份(build_panel)。
 
 用法:
-    python pipelines/km_cos_gui.py
-    或  python run.py            (無旗標時預設開這個)
+    python pipelines/km_cos_gui.py   (單獨開 km_cos)
+    或  python run.py                (統一訓練介面，預設選 km_cos)
 """
-import json
 import re
 import sys
 from datetime import datetime
@@ -30,35 +32,36 @@ REPO = Path(__file__).resolve().parent.parent
 MLOPS = REPO / "MLOps"
 KMCOS_CFG_DIR = MLOPS / "train" / "configs" / "km_cos"
 DEFAULT_SEEDS = "data/seeds/km_cos_persona_prompts.jsonl"  # 人格誘發專用（高對比）
+SEARCH_AUTO = "（跟著 edit）"   # search 下拉的「留空」選項：不寫進 config
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _gui_common import (existing_run_names, newest_run_dir, launch, spin, set_text,  # 共用發射/UI
+from _gui_common import (launch, spin, set_text, mark_launch, make_poller,          # 共用發射/輪詢/UI
+                         available_models, opt_line, load_run_summary,               # 共用 models/config/summary
+                         load_km_state, sync_cells,                                  # 共用 km_state 讀取
                          PERSONA_DIR, list_personas, load_persona, save_persona,      # 共用人格庫
                          km_runs, fmt_run, launch_continuetrain, list_checkpoints)    # 共用：二次訓練
-try:
-    from refusal_data_editor import available_models  # 共用 registry 讀取
-except Exception:
-    def available_models():
-        return ["Qwen/Qwen2.5-1.5B-Instruct"]
 
 
 def write_run_files(name: str, target_system: str, base_system: str, model: str,
                     seeds: str, t_max_ratio: float, sweep_steps: int, k_decay: float,
-                    flip_frac, flip_low, sign: str,
-                    control_repeats: int, gen_max_tokens: int, n_steps: int = 8) -> Path:
+                    flip_low, sign: str,
+                    control_repeats: int, gen_max_tokens: int, n_steps: int = 8,
+                    edit: str = "shift", search: str = "", collapse_high="",
+                    shift_scale="") -> Path:
     """寫出 persona 檔 + km_cos config 檔,回傳 config 路徑。純檔案操作,可單獨測。
 
-    flip_frac：逐筆翻轉邊界在 rank 兩基準間的位置（留空＝用 KmCosConfig 預設 0.5＝中點）。
-    flip_low：翻轉率門檻，flip_rate < 此 → 長 T（留空＝用預設 1.0）。留空（""／None）不寫進 config。"""
+    flip_low / search / collapse_high / shift_scale：留空（""／None）不寫進 config，＝用 KmCosConfig 預設
+    （flip_low=1.0；search 跟著 edit；collapse_high=0 關閉；shift_scale=1.0）。"""
     KMCOS_CFG_DIR.mkdir(parents=True, exist_ok=True)
     persona = KMCOS_CFG_DIR / f"persona_{name}.txt"
     persona.write_text(target_system.strip() + "\n", encoding="utf-8")
     base_path = KMCOS_CFG_DIR / f"persona_base_{name}.txt"
     # base 留空＝對照組不帶任何 system（空檔），cos 對比＝人格 vs 無提示詞
     base_path.write_text(base_system.strip() + "\n", encoding="utf-8")
-    opt = lambda key, val: (f"{key} = {val}\n"
-                            if str(val).strip() not in ("", "None") else "")
-    thresh_lines = opt("flip_frac           ", flip_frac) + opt("flip_low            ", flip_low)
+    thresh_lines = opt_line("flip_low            ", flip_low)
+    search_lines = (opt_line("search              ", search)
+                    + opt_line("collapse_high       ", collapse_high)
+                    + opt_line("shift_scale         ", shift_scale))
     cfg = KMCOS_CFG_DIR / f"{name}.txt"
     cfg.write_text(
         f"""# km_cos(cosplay 行為編輯)— 由 GUI 產生
@@ -68,8 +71,10 @@ target_system_file  = {persona.relative_to(REPO).as_posix()}
 base_system_file    = {base_path.relative_to(REPO).as_posix()}
 sign                = {sign}
 reverse_type        = true
-# gen-2 單調 T/K 掃描（run_sweep）；步進走翻轉率，翻轉＝句向量差分逐筆越過 flip_boundary
-# flip_frac 定邊界位置、flip_low 定率門檻（留空＝用 KmCosConfig 預設 0.5 / 1.0）
+# 編輯方式：shift＝激活偏移（與 vector 共用）；legacy＝歸零/取負
+edit                = {edit}
+# 搜尋方式：sweep＝由下往上 / descent＝由上往下（沒寫＝跟著 edit）；collapse_high>0 → 崩壞驅動
+{search_lines}# 步進走翻轉率，翻轉＝似然度偏好逐題越過該題中點；flip_low 定率門檻（沒寫＝預設 1.0）
 t_max_ratio         = {t_max_ratio}
 sweep_steps         = {sweep_steps}
 k_decay             = {k_decay}
@@ -81,11 +86,9 @@ n_steps             = {n_steps}
 
 
 def list_configs() -> list[str]:
-    """configs/km_cos/ 下的 run config（*.txt，排除 persona_ companion 與快照子目錄）。"""
-    if not KMCOS_CFG_DIR.exists():
-        return []
-    return sorted(p.stem for p in KMCOS_CFG_DIR.glob("*.txt")
-                  if not p.name.startswith("persona_"))
+    """configs/km_cos/ 下的 run config（排除 default 與 persona_ 附屬檔；train_catalog 同一份規則）。"""
+    from train_catalog import list_configs as _list
+    return _list("km_cos")
 
 
 def load_config(stem: str) -> dict:
@@ -113,30 +116,38 @@ def load_config(stem: str) -> dict:
         "t_max_ratio": g("t_max_ratio"), "sweep_steps": g("sweep_steps"),
         "k_decay": g("k_decay"), "control_repeats": g("control_repeats"),
         "gen_max_tokens": g("gen_max_tokens"), "n_steps": g("n_steps"),
-        "flip_frac": g("flip_frac"), "flip_low": g("flip_low"),
+        "flip_low": g("flip_low"), "edit": g("edit"), "search": g("search"),
+        "collapse_high": g("collapse_high"), "shift_scale": g("shift_scale"),
     }
 
 
 def read_progress(run_dir: Path) -> dict:
     """只讀數字,不讀題目/回答原文。"""
-    out = {"status": "?", "cells": 0, "best": None, "bounds": None}
-    sm = run_dir / "run_summary.json"
-    if sm.exists():
+    out = {"status": load_run_summary(run_dir).get("status", "?"), "cells": 0, "best": None, "bounds": None}
+    s = load_km_state(run_dir)
+    if s:
         try:
-            out["status"] = json.loads(sm.read_text(encoding="utf-8")).get("status", "?")
-        except Exception:
-            pass
-    ks = run_dir / "km_state.json"
-    if ks.exists():
-        try:
-            s = json.loads(ks.read_text(encoding="utf-8"))
             out["bounds"] = s.get("bounds")
-            sync = [c for c in s.get("cells", []) if c.get("kind") == "sync"]
+            sync = sync_cells(s)
             out["cells"] = len(sync)
-            viable = [c for c in sync if c.get("auto_collapse", 0) < c.get("n", 1)] or sync
-            if viable:
-                b = max(viable, key=lambda c: (c.get("flips", 0) / max(1, c.get("n", 1)), c.get("cos", -9)))
-                out["best"] = {"k": b["k"], "m": b["m"], "cos": b.get("cos"),
+            v2 = s.get("v2") or {}
+            rate = lambda c, key: c.get(key, 0) / max(1, c.get("n", 1))
+            b = None
+            if v2.get("direction") == "descent" and sync:
+                # 與 prune_vector.pick_best 同規則（GUI 不 import torch 系模組，故在此照抄判準）：
+                # 不崩壞（崩壞率 < collapse_high）且翻轉率 ≥ flip_low 的格中 K 最小；都沒有則取翻轉率最高
+                low, ch = float(v2.get("low") or 0), v2.get("collapse_high")
+                hit = [c for c in sync if rate(c, "flips") >= low
+                       and not (ch and rate(c, "auto_collapse") >= float(ch))]
+                b = (min(hit, key=lambda c: (c["k"], c.get("scale", 0), c.get("auto_collapse", 0),
+                                             c["k"] + c["m"])) if hit
+                     else max(sync, key=lambda c: rate(c, "flips")))
+            else:
+                viable = [c for c in sync if c.get("auto_collapse", 0) < c.get("n", 1)] or sync
+                if viable:
+                    b = max(viable, key=lambda c: (rate(c, "flips"), c.get("cos", -9)))
+            if b:
+                out["best"] = {"k": b["k"], "m": b["m"], "cos": b.get("cos"), "scale": b.get("scale"),
                                "flips": b.get("flips"), "collapse": b.get("auto_collapse"), "n": b.get("n")}
         except Exception:
             pass
@@ -145,15 +156,22 @@ def read_progress(run_dir: Path) -> dict:
 
 def main():
     import tkinter as tk
-    from tkinter import ttk, messagebox, simpledialog
-
     root = tk.Tk()
     root.title("km_cos — 讓模型 cosplay 一個人格")
     root.geometry("860x760")
+    build_panel(root, root).pack(fill="both", expand=True)
+    root.mainloop()
+
+
+def build_panel(parent, root):
+    """在 parent 裡建 km_cos 操作面板並回傳（呼叫端自行 pack）。root＝頂層視窗（after/對話框用）。
+    單獨執行（main）與統一訓練介面（train_gui.py 選 km_cos）共用這一份。"""
+    import tkinter as tk
+    from tkinter import ttk, messagebox, simpledialog
+
     state = {"run_dir": None, "config_stem": None}
 
-    frm = ttk.Frame(root, padding=10)
-    frm.pack(fill="both", expand=True)
+    frm = ttk.Frame(parent, padding=10)
 
     ttk.Label(frm, text="要誘發的人格（target system）", font=("", 10, "bold")).pack(anchor="w")
     ttk.Label(frm, text="例：你是一隻貓娘，說話尾端會加「喵」，撒嬌、親暱。",
@@ -230,6 +248,8 @@ def main():
             model_box.set(v["model"])
         seeds_var.set(v["seeds"] or DEFAULT_SEEDS)
         sign_var.set(v["sign"] or "both")
+        edit_var.set(v["edit"] or "shift")   # 舊 config 沒寫 edit＝跟執行期預設（shift）一致
+        search_var.set(v["search"] or SEARCH_AUTO)
 
         def put(var, val, default):
             var.set(val if str(val).strip() not in ("", "None") else default)
@@ -239,8 +259,9 @@ def main():
         put(reps, v["control_repeats"], "5")
         put(gen_tokens, v["gen_max_tokens"], "128")
         put(n_steps, v["n_steps"], "8")
-        put(flip_frac, v["flip_frac"], "")   # 空＝用 KmCosConfig 預設
-        put(flip_low, v["flip_low"], "")
+        put(flip_low, v["flip_low"], "")   # 空＝用 KmCosConfig 預設
+        put(collapse_high, v["collapse_high"], "")
+        put(shift_scale, v["shift_scale"], "")
         if set_name:
             cfgname_var.set(stem)   # 預填名稱→再發射＝沿用同名 config（只改欄位就覆寫，不生新的一份）
 
@@ -256,7 +277,7 @@ def main():
     sweep_steps = spin(prow, "sweep_steps", 8, 1)
     k_decay = spin(prow, "k_decay", 0.75, 2)
     gen_tokens = spin(prow, "gen_tokens", 128, 3)
-    n_steps = spin(prow, "n_steps(排序/建質心)", 8, 4)
+    n_steps = spin(prow, "n_steps(排序探測)", 8, 4)
 
     prow2 = ttk.Frame(frm); prow2.pack(fill="x", pady=2)
     sign_var = tk.StringVar(value="both")
@@ -264,10 +285,23 @@ def main():
     ttk.Combobox(prow2, textvariable=sign_var, values=["both", "positive", "negative"],
                  state="readonly", width=9).grid(row=0, column=1, sticky="w")
     reps = spin(prow2, "隨機對照", 5, 1)
+    edit_var = tk.StringVar(value="shift")
+    ttk.Label(prow2, text="編輯方式").grid(row=0, column=4, sticky="e", padx=(8, 2))
+    ttk.Combobox(prow2, textvariable=edit_var, values=["shift", "legacy"],
+                 state="readonly", width=8).grid(row=0, column=5, sticky="w")
 
     prow3 = ttk.Frame(frm); prow3.pack(fill="x", pady=2)
-    flip_frac = spin(prow3, "flip_frac（翻轉邊界 0~1，留空=0.5中點）", "", 0, width=10)
-    flip_low = spin(prow3, "flip_low（翻轉率門檻，留空=1.0）", "", 1, width=10)
+    flip_low = spin(prow3, "flip_low（翻轉率門檻，留空=1.0）", "", 0, width=10)
+    collapse_high = spin(prow3, "collapse_high（崩壞門檻，留空=關閉）", "", 1, width=8)
+    shift_scale = spin(prow3, "shift_scale（留空=1.0；逗號清單=多強度搜尋）", "", 2, width=12)
+
+    prow4 = ttk.Frame(frm); prow4.pack(fill="x", pady=2)
+    search_var = tk.StringVar(value=SEARCH_AUTO)
+    ttk.Label(prow4, text="搜尋方式").grid(row=0, column=0, sticky="e", padx=(8, 2))
+    ttk.Combobox(prow4, textvariable=search_var, values=[SEARCH_AUTO, "sweep", "descent"],
+                 state="readonly", width=14).grid(row=0, column=1, sticky="w")
+    ttk.Label(prow4, text="sweep＝由下往上；descent＝由上往下（填 collapse_high 即崩壞驅動）",
+              foreground="#666").grid(row=0, column=2, sticky="w", padx=6)
 
     # 欄位→config：發射 km_cos 與二次訓練共用（欄位＝唯一真相）
     def _fields_ok():
@@ -280,8 +314,11 @@ def main():
     def _write_config(stem):
         write_run_files(stem, target.get("1.0", "end"), base.get("1.0", "end"), model_box.get(),
                         seeds_var.get(), float(t_max_ratio.get()), int(sweep_steps.get()),
-                        float(k_decay.get()), flip_frac.get().strip(), flip_low.get().strip(),
-                        sign_var.get(), int(reps.get()), int(gen_tokens.get()), int(n_steps.get()))
+                        float(k_decay.get()), flip_low.get().strip(),
+                        sign_var.get(), int(reps.get()), int(gen_tokens.get()), int(n_steps.get()),
+                        edit=edit_var.get(),
+                        search="" if search_var.get() == SEARCH_AUTO else search_var.get(),
+                        collapse_high=collapse_high.get().strip(), shift_scale=shift_scale.get().strip())
 
     # 二次訓練：挑一個已訓練 km_cos run → 它的 config 反映到上方欄位（可再調）→ 用目前欄位續訓。
     # 底模＝所選 run（遮罩 checkpoint 自動封裝成 packed），所以模型欄位對續訓不影響。
@@ -364,26 +401,16 @@ def main():
         # 有填名稱＝用它當 config 檔名（可重用、可被續訓選到）；留空＝自動時間戳臨時 config
         stem = (re.sub(r"[^\w一-鿿.-]+", "_", name) if name
                 else "km_cos_gui_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
-        state["before"] = existing_run_names()   # 啟動前快照，poll 用來認出新 run 目錄
-        state["run_dir"] = None                  # 重置，否則第二次發射會沿用上一個 run 的進度
         try:
             _write_config(stem)
+            mark_launch(state, stem)   # 啟動前快照，poll 用來認出新 run 目錄
             launch("km_cos", stem)
         except Exception as e:
             messagebox.showerror("發射失敗", str(e)); return
-        state["config_stem"] = stem
         status_var.set(f"已發射：config={stem}（在新視窗跑，約數十分鐘～數小時）")
         root.after(4000, poll)
 
-    def poll():
-        stem = state["config_stem"]
-        if not stem:
-            return
-        if state["run_dir"] is None:
-            state["run_dir"] = newest_run_dir(state.get("before", set()), stem)
-        rd = state["run_dir"]
-        if rd is None:
-            status_var.set("等待 run 目錄出現…"); root.after(5000, poll); return
+    def render(rd):
         p = read_progress(rd)
         lines = [f"run: {rd.name}", f"狀態: {p['status']}", f"已完成 sync 格: {p['cells']}",
                  f"bounds: {p['bounds']}"]
@@ -391,13 +418,14 @@ def main():
             b = p["best"]
             n = b.get("n") or 1
             rate = (b.get("flips") or 0) / n
-            lines.append(f"目前最佳格: K={b['k']} M={b['m']}  翻轉 {b.get('flips')}/{b['n']}"
-                         f"（率 {rate:.0%}）  cos={b['cos']}  崩壞={b['collapse']}/{b['n']}")
-        lines.append("\n（翻轉率＝輸出被誘發成目標人格的比例；cos＝平均差分；只顯示數字，不顯示題目/回答）")
+            sc = f" 強度={b['scale']:g}" if b.get("scale") is not None else ""
+            lines.append(f"目前最佳格:{sc} K={b['k']} M={b['m']}  翻轉 {b.get('flips')}/{b['n']}"
+                         f"（率 {rate:.0%}）  平均位置={b['cos']}  崩壞={b['collapse']}/{b['n']}")
+        lines.append("\n（翻轉率＝輸出被誘發成目標人格的比例；平均位置＝似然度偏好在地板(0)與天花板(1)之間的位置；只顯示數字，不顯示題目/回答）")
         set_prog("\n".join(lines))
-        status_var.set(f"{rd.name} — {p['status']}")
-        if p["status"] not in ("completed", "failed"):
-            root.after(8000, poll)
+        return p["status"]
+
+    poll = make_poller(root, state, status_var, render)
 
     btns = ttk.Frame(frm); btns.pack(fill="x", pady=6)
     ttk.Label(btns, text="config 名稱").pack(side="left")
@@ -407,7 +435,7 @@ def main():
     ttk.Button(btns, text="發射 km_cos", command=do_launch).pack(side="left")
     ttk.Button(btns, text="重新整理進度", command=poll).pack(side="left", padx=6)
 
-    root.mainloop()
+    return frm
 
 
 if __name__ == "__main__":

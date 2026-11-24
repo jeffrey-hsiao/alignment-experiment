@@ -1,0 +1,27 @@
+# prune_v2 第二層（遞迴 prune）：底模 = phi_006 的 checkpoint-32（50%T 乾淨格，
+#   歸零1080 + 取負6540）已烘焙進權重的模型 models/phi-3.5-mini-instruct__l1ckpt32。
+# 在這個「已剪一層」的模型上重跑：資料重分類（_model_groups）+ 神經元重排行
+#   （build_ranking）+ 單調掃描 → 得到第二層遮罩，疊在第一層上。
+# 搜尋參數與 phi.txt 完全相同（控制變因），好跟第一層直接比較。
+
+seeds           = data/seeds/km_merged.jsonl
+model_name      = models/phi-3.5-mini-instruct__l1ckpt32
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+reverse_type    = true
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+# 掃描參數（與 phi.txt 相同）
+sweep_steps       = 10
+k_ratio_start     = 0.5
+k_decay           = 0.9
+flip_low          = 0.3
+
+redact_content  = true

@@ -16,6 +16,12 @@ MLOps/packer.py
   因為每個 packed 都事先 flatten 成「相對 HF base」，所以 pack 新一層只需查上一層那張
   平坦遮罩、合併一次即可，base 永遠指向最終 HF 模型。
 
+  vector 方法另有偏移 S（激活 a→a+δ，載入時折成 bias b = δ·w）。δ 相對**底模**權重欄、在該層
+  歸零/取負之前套用，bias 算好就固定（apply_masks 的順序）。第二層在已烘焙模型上編輯時：
+    - 第二層的歸零/取負只改權重欄，不動第一層留下的 bias  → δ1 原封保留（即使該神經元被歸零）
+    - 第二層的偏移是對「第一層後的權重」s1·w 算的        → 換算回 HF base：s1·δ2
+  所以 δ_net = δ1 + s1·δ2，其中 s1 = 0（Z1）/ −1（R1）/ +1（其他）。
+
 pack 全程只做集合運算 + 讀寫 JSON，**不載入模型、不需 GPU**。
 """
 import json
@@ -23,11 +29,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from model_registry import EXPERIMENTS_DIR, REGISTRY_PATH, ROOT, read_summary
+from model_registry import EXPERIMENTS_DIR, REGISTRY_PATH, ROOT, best_checkpoint, read_summary
 from prune_utils import read_prune_checkpoint, write_prune_checkpoint
 
 PACKED_DIR = ROOT / "models" / "packed"
-PRUNE_METHODS = {"prune", "prune_v2", "km_cos"}
+PRUNE_METHODS = {"prune", "prune_v2", "km_cos", "vector"}
 
 
 class PackError(Exception):
@@ -42,14 +48,9 @@ def _resolve_checkpoint(exp_dir: Path, checkpoint: str | None) -> str:
         if not (ckpt_root / checkpoint).exists():
             raise PackError(f"找不到 checkpoint：{checkpoint}（在 {exp_dir.name}）")
         return checkpoint
-    if (ckpt_root / "final").exists():
-        return "final"
-    numbered = sorted((p for p in ckpt_root.iterdir() if p.name.startswith("checkpoint-")),
-                      key=lambda p: int(p.name.split("-")[1]))
-    if numbered:
-        return numbered[-1].name
-    if (ckpt_root / "emergency").exists():
-        return "emergency"
+    best = best_checkpoint(ckpt_root)   # final > 最大編號 > emergency（單一來源）
+    if best is not None:
+        return best.name
     raise PackError(f"{exp_dir.name} 沒有任何可用 checkpoint")
 
 
@@ -83,15 +84,34 @@ def find_packed(packed_id: str) -> dict | None:
     return None
 
 
-def _parent_mask(base_ref: str) -> tuple[str, set, set]:
+def _parent_mask(base_ref: str) -> tuple[str, set, set, dict]:
     """解析某 checkpoint 的 base_model：
-    - 指向另一個 packed 遮罩目錄（有 pruned_neurons.json，已平坦）→ (其 HF base, Z_parent, R_parent)
-    - 否則是 HF 名稱 / 本地 HF 模型 → (base_ref, 空, 空)"""
+    - 指向另一個 packed 遮罩目錄（有 pruned_neurons.json，已平坦）→ (其 HF base, Z, R, S)
+    - 否則是 HF 名稱 / 本地 HF 模型 → (base_ref, 空, 空, 空)
+    S = {(層, 索引): δ}（vector 偏移；非 vector 來源為空）。"""
     p = ROOT / base_ref
     info = read_prune_checkpoint(p) if p.is_dir() else None
     if info is not None:
-        return info["base_model"], set(info["neurons"]), set(info["reversed"])
-    return base_ref, set(), set()
+        return (info["base_model"], set(info["neurons"]), set(info["reversed"]),
+                _shift_dict(info["shifted"]))
+    return base_ref, set(), set(), {}
+
+
+def _shift_dict(shifted) -> dict:
+    out: dict = {}
+    for l, n, d in shifted:
+        out[(l, n)] = out.get((l, n), 0.0) + float(d)
+    return out
+
+
+def _flatten_shift(s1: dict, s2: dict, z1: set, r1: set) -> dict:
+    """δ_net = δ1 + sign1·δ2（見檔頭）。sign1：第一層歸零 0、取負 −1、其他 +1。
+    第一層的 δ1 不因第二層歸零/取負而改變——它在第二層執行時已是固定 bias。"""
+    out = dict(s1)
+    for key, d in s2.items():
+        sign = 0.0 if key in z1 else (-1.0 if key in r1 else 1.0)
+        out[key] = out.get(key, 0.0) + sign * d
+    return {k: d for k, d in out.items() if d != 0.0}
 
 
 def _flatten(z1: set, r1: set, z2: set, r2: set) -> tuple[set, set]:
@@ -127,18 +147,21 @@ def pack_prune_checkpoint(run_id: str, checkpoint: str | None = None,
         print(f"包裝模型已存在，直接沿用：{packed_id}（--force 可重做）", flush=True)
         return existing
 
-    hf_base, z1, r1 = _parent_mask(src["base_model"])
+    hf_base, z1, r1, s1 = _parent_mask(src["base_model"])
     z_net, r_net = _flatten(z1, r1, set(src["neurons"]), set(src["reversed"]))
+    s_net = _flatten_shift(s1, _shift_dict(src["shifted"]), z1, r1)
 
-    recursive = bool(z1 or r1)
+    recursive = bool(z1 or r1 or s1)
     print(f"包裝 {run_id}/{ckpt_name}：HF base {hf_base}"
-          + (f"（遞迴合併上一層：Z1={len(z1)} R1={len(r1)}）" if recursive else "")
-          + f" → 平坦遮罩 歸零 {len(z_net)}、取負 {len(r_net)}", flush=True)
+          + (f"（遞迴合併上一層：Z1={len(z1)} R1={len(r1)} S1={len(s1)}）" if recursive else "")
+          + f" → 平坦遮罩 歸零 {len(z_net)}、取負 {len(r_net)}"
+          + (f"、偏移 {len(s_net)}" if s_net else ""), flush=True)
 
     if out_dir.exists():
         shutil.rmtree(out_dir)   # 清掉舊的（含早期全權重烘焙殘留）
     out_dir.mkdir(parents=True, exist_ok=True)
     write_prune_checkpoint(out_dir, hf_base, z_net, r_net,
+                           shifted=[(l, n, d) for (l, n), d in s_net.items()],
                            phase="packed", source_run=run_id, source_checkpoint=ckpt_name,
                            recursive=recursive)
 
@@ -150,6 +173,7 @@ def pack_prune_checkpoint(run_id: str, checkpoint: str | None = None,
         "base_model":        hf_base,
         "zeroed":            len(z_net),
         "reversed":          len(r_net),
+        **({"shifted": len(s_net)} if s_net else {}),
         "recursive":         recursive,
         "created_at":        datetime.now().isoformat(timespec="seconds"),
     }

@@ -38,7 +38,12 @@ TRAIN_DIR = ROOT / "train"
 
 sys.path.insert(0, str(TRAIN_DIR / "scripts"))
 
-from model_registry import read_summary, load_model_registry
+from model_registry import read_summary, load_model_registry, best_checkpoint
+# 方法/設定檔/預設的查詢共用 train_catalog（train_gui 也用同一份）；保留底線名稱給既有呼叫點
+from train_catalog import (available_methods as _available_methods, get_cfg_cls as _get_cfg_cls,
+                           list_configs as _list_configs, get_default_config as _get_default,
+                           set_default_config as _set_default, get_data_default as _get_data_default,
+                           set_data_default as _set_data_default)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -123,26 +128,6 @@ def _next_run_id(model_name: str) -> str:
             idx += 1
 
 
-def _available_methods() -> list[str]:
-    """掃描 train/scripts/train_*.py，自動取得所有可用方法名稱。"""
-    return sorted(
-        p.stem[len("train_"):]
-        for p in (TRAIN_DIR / "scripts").glob("train_*.py")
-    )
-
-
-def _get_cfg_cls(method: str):
-    """從 base_config 動態取得對應設定類（依 METHOD 屬性匹配）。"""
-    import base_config as _bc
-    for attr in vars(_bc).values():
-        if (isinstance(attr, type)
-                and issubclass(attr, _bc.BaseConfig)
-                and attr is not _bc.BaseConfig
-                and getattr(attr, "METHOD", "") == method):
-            return attr
-    return None
-
-
 def _launch(cmd: list, inline: bool, run_id: str):
     """在新視窗（預設）或當前終端（--inline）啟動訓練。"""
     if inline:
@@ -183,40 +168,13 @@ def _snapshot_config(method: str, config_name: str, date_str: str, config_path: 
 
 
 def _find_best_checkpoint(exp_dir: Path) -> Path | None:
-    ckpt_dir = exp_dir / "checkpoints"
-    if not ckpt_dir.exists():
-        return None
-    final = ckpt_dir / "final"
-    if final.exists():
-        return final
-    numbered = sorted(
-        (p for p in ckpt_dir.iterdir() if p.name.startswith("checkpoint-")),
-        key=lambda p: int(p.name.split("-")[1]),
-    )
-    if numbered:
-        return numbered[-1]
-    emergency = ckpt_dir / "emergency"
-    if emergency.exists():
-        return emergency
-    return None
+    """final > 最大編號 checkpoint-N > emergency（實作在 model_registry.best_checkpoint）。"""
+    return best_checkpoint(exp_dir)
 
 
 # ── data subcommands ───────────────────────────────────────────────────────────
 
-_DATA_DEFAULT_FILE = DATA_DIR / ".defaults"
-
-def _get_data_default(method: str) -> list[str] | None:
-    if not _DATA_DEFAULT_FILE.exists():
-        return None
-    import json as _json
-    d = _json.loads(_DATA_DEFAULT_FILE.read_text(encoding="utf-8"))
-    return d.get(method) or None
-
-def _set_data_default(method: str, versions: list[str]):
-    import json as _json
-    d = _json.loads(_DATA_DEFAULT_FILE.read_text(encoding="utf-8")) if _DATA_DEFAULT_FILE.exists() else {}
-    d[method] = versions
-    _DATA_DEFAULT_FILE.write_text(_json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+# 資料預設的讀寫在 train_catalog（get/set_data_default）
 
 def cmd_data_default(args):
     method   = getattr(args, "method",  None)
@@ -387,7 +345,7 @@ def _resume_run(args):
     if not summary_path.exists():
         print(f"找不到 run：{run_id}")
         return
-    summary = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+    summary = read_summary(summary_path)
     method   = summary.get("method")
     _cfg_cls = _get_cfg_cls(method)
     if _cfg_cls is None:
@@ -884,21 +842,7 @@ def cmd_result_delete(args):
 
 # ── config subcommands ────────────────────────────────────────────────────────
 
-def _default_pointer(method: str) -> Path:
-    return TRAIN_DIR / "configs" / method / ".default"
-
-def _get_default(method: str) -> str | None:
-    p = _default_pointer(method)
-    return p.read_text(encoding="utf-8").strip() if p.exists() else None
-
-def _set_default(method: str, name: str):
-    _default_pointer(method).write_text(name, encoding="utf-8")
-
-
-def _list_configs(method: str) -> list[str]:
-    """列出某方法下所有可用的具名設定檔（排除 default.txt）。"""
-    d = TRAIN_DIR / "configs" / method
-    return sorted(p.stem for p in d.glob("*.txt") if p.stem != "default")
+# 設定檔預設與清單的讀寫在 train_catalog（get/set_default_config、list_configs）
 
 
 def cmd_config_default(args):
@@ -1149,6 +1093,10 @@ def _build_parser():
     # mk-review（prune / km_cos 等 sweep 方法的成績查看 GUI）
     sub.add_parser("mk-review", add_help=False)
 
+    # dc（選一個模型接上 Discord；其餘參數原樣交給 dc_bot.py 解析）
+    dcp = sub.add_parser("dc", add_help=False)
+    dcp.add_argument("dc_args", nargs=argparse.REMAINDER)
+
     # showmode
     smp = sub.add_parser("showmode", add_help=False)
     smp.add_argument("name", nargs="?")
@@ -1225,6 +1173,15 @@ def _dispatch(args, dp, tp, rp, cp):
     elif args.command == "mk-review":
         cmd_mk_review(args)
 
+    elif args.command == "dc":
+        # dc_bot.py 是個人自用的本機模組（.gitignore 排除），clone 下來沒有屬正常
+        try:
+            from dc_bot import main as dc_main
+        except ImportError:
+            print("此環境沒有 dc_bot.py（Discord 部署為本機自用功能，不在版控內）。")
+            return
+        dc_main(args.dc_args)
+
     elif args.command == "showmode":
         cmd_showmode(args)
 
@@ -1270,7 +1227,7 @@ HELP_TEXT = """\
   result delete <run_id> --force        ← 直接刪除
   chat <run_id> [checkpoint]            ← 與訓練模型互動對話
   compare-chat <run_id> [<run_id> ...]  ← 多模型對話對比（單一面板）
-  list-models                            ← 列出所有可用訓練模型
+  list-models                            ← 列出所有可用模型（含階段：解除對齊／模型調整）
   mk-review                              ← prune / km_cos 等成績查看 GUI（按 T 看最佳格/最低 K）
   showmode                       ← 查看可用顯示模式與目前設定
   showmode <name|none>           ← 切換顯示模式（none 停用）
@@ -1286,17 +1243,17 @@ HELP_TEXT = """\
 
 USAGE_TEXT = """\
 用法：
-  python run.py            不加參數 → 開啟 km_cos 行為編輯圖形介面
+  python run.py            不加參數 → 開啟統一訓練圖形介面（上方選訓練方式，預設 km_cos）
   python run.py repl       進入互動模式（REPL）
   python run.py <指令> …    直接執行單一指令（指令清單如下）
 
 """ + HELP_TEXT
 
 
-def _launch_km_cos_gui():
-    """無任何參數時的預設介面：km_cos（cosplay 行為編輯）圖形介面。"""
+def _launch_train_gui():
+    """無任何參數時的預設介面：統一訓練 GUI（上方選訓練方式，預設 km_cos）。"""
     import subprocess
-    gui = ROOT.parent / "pipelines" / "km_cos_gui.py"
+    gui = ROOT.parent / "pipelines" / "train_gui.py"
     subprocess.run([sys.executable, str(gui)])
 
 
@@ -1339,9 +1296,9 @@ def main():
     parser, dp, tp, rp, cp = _build_parser()
     argv = sys.argv[1:]
 
-    # 無任何參數 → 預設開 km_cos 圖形介面（這個訓練方法的專屬介面）
+    # 無任何參數 → 開統一訓練圖形介面（可選所有訓練方式，預設 km_cos）
     if not argv:
-        _launch_km_cos_gui()
+        _launch_train_gui()
         return
     # 頂層說明（parser 以 add_help=False 建立，-h/--help 在這裡自行攔截）
     if argv[0] in ("-h", "--help", "help"):

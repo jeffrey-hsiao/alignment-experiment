@@ -17,7 +17,6 @@ prune_v2（gen-2 單調 T/K 掃描，拒絕移除）的圖形介面：選模型 
 用法：
     python pipelines/prune_v2_gui.py
 """
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -28,26 +27,22 @@ PV2_CFG_DIR = MLOPS / "train" / "configs" / "prune_v2"
 DEFAULT_SEEDS = "data/seeds/km_merged.jsonl"   # 成對有害/無害種子（拒絕移除用）
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _gui_common import existing_run_names, newest_run_dir, launch, spin, set_text  # 共用發射/UI 小工具
-try:
-    from refusal_data_editor import available_models   # 共用 registry 讀取
-except Exception:
-    def available_models():
-        return ["Qwen/Qwen2.5-1.5B-Instruct"]
+from _gui_common import (launch, spin, set_text, mark_launch, make_poller,          # 共用發射/輪詢/UI
+                         available_models, opt_line, load_run_summary,               # 共用 models/config/summary
+                         load_km_state, sync_cells, system_config_lines)             # 共用 km_state / system prompt
 
 
 def write_run_files(name: str, model: str, seeds: str, judge: str, judge_device: str,
                     sign: str, t_max_ratio, sweep_steps, k_ratio_start, k_decay, flip_low,
                     gen_max_tokens, rank_ratio, tune_ratio, collapse_ratio,
                     control_repeats, reverse_type: bool, redact_content: bool,
-                    ranking_path: str = "") -> Path:
+                    ranking_path: str = "", system: str = "") -> Path:
     """寫出 prune_v2 config 檔，回傳路徑。純檔案操作，可單獨測（headless）。
 
     flip_low＝翻轉率進格門檻（prune_v2 核心可調項）。ranking_path 留空＝用 rank 集重新
-    排序；填了＝沿用既有排序探測（同模型/seeds/split/分組/n_steps 才可沿用）。"""
+    排序；填了＝沿用既有排序探測（同模型/seeds/split/分組/n_steps 才可沿用）。
+    system＝生成/探測用 system prompt；留空＝模型原廠身分，__none__＝不帶 system。"""
     PV2_CFG_DIR.mkdir(parents=True, exist_ok=True)
-    opt = lambda key, val: (f"{key} = {val}\n"
-                            if str(val).strip() not in ("", "None") else "")
     cfg = PV2_CFG_DIR / f"{name}.txt"
     cfg.write_text(
         f"""# prune_v2（gen-2 單調 T/K 掃描，拒絕移除）— 由 GUI 產生
@@ -57,14 +52,15 @@ group_source      = model
 judge             = {judge}
 judge_device      = {judge_device}
 gen_max_tokens    = {gen_max_tokens}
-
+# system prompt（沒寫＝模型原廠身分）
+{system_config_lines("prune_v2", name, system)}
 sign              = {sign}
 reverse_type      = {'true' if reverse_type else 'false'}
 
 rank_ratio        = {rank_ratio}
 tune_ratio        = {tune_ratio}
 collapse_ratio    = {collapse_ratio}
-{opt("ranking_path      ", ranking_path)}
+{opt_line("ranking_path      ", ranking_path)}
 # gen-2 單調 T/K 掃描（run_sweep）；跳格判準＝拒絕翻轉率 flips/n，門檻 flip_low
 t_max_ratio       = {t_max_ratio}
 sweep_steps       = {sweep_steps}
@@ -80,19 +76,12 @@ redact_content    = {'true' if redact_content else 'false'}
 
 def read_progress(run_dir: Path) -> dict:
     """只讀數字，不讀題目/回答原文。prune_v2 最佳格＝翻轉減崩壞最高（同 _top_cells）。"""
-    out = {"status": "?", "cells": 0, "best": None, "bounds": None}
-    sm = run_dir / "run_summary.json"
-    if sm.exists():
+    out = {"status": load_run_summary(run_dir).get("status", "?"), "cells": 0, "best": None, "bounds": None}
+    s = load_km_state(run_dir)
+    if s:
         try:
-            out["status"] = json.loads(sm.read_text(encoding="utf-8")).get("status", "?")
-        except Exception:
-            pass
-    ks = run_dir / "km_state.json"
-    if ks.exists():
-        try:
-            s = json.loads(ks.read_text(encoding="utf-8"))
             out["bounds"] = s.get("bounds")
-            sync = [c for c in s.get("cells", []) if c.get("kind") == "sync"]
+            sync = sync_cells(s)
             out["cells"] = len(sync)
             if sync:
                 b = max(sync, key=lambda c: (c.get("flips", 0) - c.get("auto_collapse", 0), -c.get("k", 0)))
@@ -106,15 +95,22 @@ def read_progress(run_dir: Path) -> dict:
 
 def main():
     import tkinter as tk
-    from tkinter import ttk, messagebox
-
     root = tk.Tk()
     root.title("prune_v2 — gen-2 單調掃描（拒絕移除）")
-    root.geometry("860x640")
+    root.geometry("860x700")
+    build_panel(root, root).pack(fill="both", expand=True)
+    root.mainloop()
+
+
+def build_panel(parent, root):
+    """在 parent 裡建 prune_v2 操作面板並回傳（呼叫端自行 pack）。root＝頂層視窗（after 用）。
+    單獨執行（main）與統一訓練介面（train_gui.py 選 prune_v2）共用。"""
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+
     state = {"run_dir": None, "config_stem": None}
 
-    frm = ttk.Frame(root, padding=10)
-    frm.pack(fill="both", expand=True)
+    frm = ttk.Frame(parent, padding=10)
 
     ttk.Label(frm, text="prune_v2：gen-2 單調 T/K 掃描，依拒絕翻轉率步進",
               font=("", 11, "bold")).pack(anchor="w")
@@ -130,6 +126,10 @@ def main():
     ttk.Label(row, text="種子題").grid(row=0, column=2, sticky="w", padx=(12, 0))
     seeds_var = tk.StringVar(value=DEFAULT_SEEDS)
     ttk.Entry(row, textvariable=seeds_var, width=34).grid(row=0, column=3, padx=4)
+
+    # system prompt（生成與排序探測都用這個；換 prompt 會自動重新分組）
+    ttk.Label(frm, text="system prompt（留空＝模型原廠身分；__none__＝不帶 system）").pack(anchor="w", pady=(4, 0))
+    system_box = tk.Text(frm, height=2, wrap="word"); system_box.pack(fill="x", pady=(2, 4))
 
     # 判定器 + 裝置 + sign
     jrow = ttk.Frame(frm); jrow.pack(fill="x", pady=2)
@@ -187,8 +187,6 @@ def main():
         if not (REPO / seeds_var.get()).exists():
             messagebox.showwarning("找不到種子題", seeds_var.get()); return
         stem = "prune_v2_gui_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-        state["before"] = existing_run_names()
-        state["run_dir"] = None
         try:
             write_run_files(
                 stem, model_box.get(), seeds_var.get(), judge_var.get(), jdev_var.get(),
@@ -196,23 +194,16 @@ def main():
                 float(k_ratio_start.get()), float(k_decay.get()), float(flip_low.get()),
                 int(gen_max_tokens.get()), float(rank_ratio.get()), float(tune_ratio.get()),
                 float(collapse_ratio.get()), int(control_repeats.get()),
-                reverse_var.get(), redact_var.get(), ranking_var.get().strip())
+                reverse_var.get(), redact_var.get(), ranking_var.get().strip(),
+                system=system_box.get("1.0", "end"))
+            mark_launch(state, stem)
             launch("prune_v2", stem)
         except Exception as e:
             messagebox.showerror("發射失敗", str(e)); return
-        state["config_stem"] = stem
         status_var.set(f"已發射：config={stem}（在新視窗跑，約數十分鐘～數小時）")
         root.after(4000, poll)
 
-    def poll():
-        stem = state["config_stem"]
-        if not stem:
-            return
-        if state["run_dir"] is None:
-            state["run_dir"] = newest_run_dir(state.get("before", set()), stem)
-        rd = state["run_dir"]
-        if rd is None:
-            status_var.set("等待 run 目錄出現…"); root.after(5000, poll); return
+    def render(rd):
         p = read_progress(rd)
         lines = [f"run: {rd.name}", f"狀態: {p['status']}", f"已完成 sync 格: {p['cells']}",
                  f"bounds: {p['bounds']}"]
@@ -222,15 +213,15 @@ def main():
                          f"崩壞={b['collapse']}  其餘翻轉={b['other']}")
         lines.append("\n（翻轉＝不再拒絕；其餘翻轉＝翻轉－自動崩壞；只顯示數字，不顯示題目/回答）")
         set_prog("\n".join(lines))
-        status_var.set(f"{rd.name} — {p['status']}")
-        if p["status"] not in ("completed", "failed"):
-            root.after(8000, poll)
+        return p["status"]
+
+    poll = make_poller(root, state, status_var, render)
 
     btns = ttk.Frame(frm); btns.pack(fill="x", pady=6)
     ttk.Button(btns, text="發射 prune_v2", command=do_launch).pack(side="left")
     ttk.Button(btns, text="重新整理進度", command=poll).pack(side="left", padx=6)
 
-    root.mainloop()
+    return frm
 
 
 if __name__ == "__main__":

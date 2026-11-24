@@ -3,7 +3,7 @@
 #
 # target_system = 要誘發的人格；base_system 留空＝用模型預設身分作對照。
 # seeds 用隨附的中性題。搜尋走 gen-2 單調 T/K 掃描（run_sweep），掃描參數
-# （t_max_ratio / sweep_steps / k_decay / flip_frac / flip_low）不填則用 KmCosConfig 預設。
+# （t_max_ratio / sweep_steps / k_decay / flip_low）不填則用 KmCosConfig 預設。
 
 model_name      = Qwen/Qwen2.5-1.5B-Instruct
 seeds           = pipelines/data/km_cos_prompts.jsonl

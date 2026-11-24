@@ -1,0 +1,24 @@
+# vector 在 Qwen2.5-1.5B：資料/判定/選點與 prune_v2/qwen1.5b.txt 相同，只換編輯方式（偏移）
+# 與搜尋方向（由上往下），可直接和 prune_v2 的 1.5B 結果對照。
+# 不沿用 prune_v2 的 ranking_path：舊 ranking.pt 沒有平均激活。分組（model_groups）會自動沿用。
+
+seeds           = data/seeds/km_merged.jsonl
+model_name      = Qwen/Qwen2.5-1.5B-Instruct
+group_source    = model
+gen_max_tokens  = 128
+judge           = classifier
+judge_device    = cpu
+
+sign            = both
+
+rank_ratio      = 0.6
+tune_ratio      = 0.4
+collapse_ratio  = 0.025
+
+t_max_ratio       = 0.6
+sweep_steps       = 8
+k_decay           = 0.75
+flip_low          = 0.3
+shift_scale       = 1.0
+
+redact_content  = true

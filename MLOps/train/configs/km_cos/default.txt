@@ -11,13 +11,11 @@
 #
 # 搜尋改用 prune_v2 的 gen-2 單調 T/K 掃描（run_sweep），數值同步自 prune_v2 參數
 # 最佳化（t_max_ratio=0.6 / sweep_steps=8 / k_decay=0.75）。步進走翻轉率，但「翻轉」＝
-# e5-small 句向量差分 s = cos(對 target 質心)−cos(對 base 質心) 逐筆越過邊界：
+# 似然度偏好 s = 平均logP(人格版參考回答) − 平均logP(原本參考回答) 越過該題中點
+# （中點＝原模型無 target system 的地板與帶 target system 的天花板之間；見 prune_km_cos 檔頭）：
 #   t_max_ratio   搜尋上界占總神經元比例
 #   sweep_steps   上界切幾大步（step = 上界 / sweep_steps）
 #   k_ratio_start 起始 K 占比；k_decay 衰減率
-#   flip_frac     逐筆翻轉邊界在 rank 兩基準間的位置：boundary = cos_base + frac×(cos_target−cos_base)。
-#                 基準由 rank 時兩組 system 條件的輸出自動算出（見 prune_km_cos._prepare）。
-#                 預設 0.5＝兩基準中點；大→靠 target 較嚴、翻轉少，小→靠 base 較寬、翻轉多。
 #   flip_low      翻轉率門檻：flip_rate = 翻轉筆數/n；< flip_low → 長 T。預設 1.0（偏嚴，可調低）。
 
 # 預設關閉：run 結尾的隨機對照格（需要時在具名 config 裡設定次數）

@@ -43,9 +43,8 @@ from chat_prompt import render_chat  # noqa: E402  提示詞組裝單一來源
 
 # ── summary helpers ───────────────────────────────────────────────────────────
 
-def _read_summary(path: Path) -> dict:
-    # utf-8-sig：部分舊 run_summary.json 開頭帶 BOM（同 model_registry.read_summary）
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+# utf-8-sig 容忍 BOM 的讀法只有 model_registry.read_summary 一份；保留 _read_summary 舊名給既有 import
+from model_registry import read_summary as _read_summary  # noqa: E402,F401
 
 def _write_summary(path: Path, data: dict):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

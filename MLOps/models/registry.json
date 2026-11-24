@@ -59,6 +59,28 @@
       "reversed": 12614,
       "recursive": true,
       "created_at": "2026-11-15T03:07:16"
+    },
+    {
+      "id": "qwen-2.5-1.5b-instruct_017__checkpoint-13",
+      "name": "models/packed/qwen-2.5-1.5b-instruct_017__checkpoint-13",
+      "source_run": "qwen-2.5-1.5b-instruct_017",
+      "source_checkpoint": "checkpoint-13",
+      "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "zeroed": 6431,
+      "reversed": 2989,
+      "recursive": false,
+      "created_at": "2026-11-17T18:55:23"
+    },
+    {
+      "id": "qwen-2.5-1.5b-instruct_017__checkpoint-6",
+      "name": "models/packed/qwen-2.5-1.5b-instruct_017__checkpoint-6",
+      "source_run": "qwen-2.5-1.5b-instruct_017",
+      "source_checkpoint": "checkpoint-6",
+      "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "zeroed": 22442,
+      "reversed": 1372,
+      "recursive": false,
+      "created_at": "2026-11-17T20:05:06"
     }
   ]
 }

@@ -1,0 +1,16 @@
+# km_cos(cosplay 行為編輯)— 由 GUI 產生
+seeds               = data/seeds/km_cos_persona_prompts.jsonl
+model_name          = Qwen/Qwen2.5-1.5B-Instruct
+target_system_file  = MLOps/train/configs/km_cos/persona_close.txt
+base_system_file    = MLOps/train/configs/km_cos/persona_base_close.txt
+sign                = both
+reverse_type        = true
+# gen-2 單調 T/K 掃描（run_sweep）；步進走翻轉率，翻轉＝句向量差分逐筆越過 flip_boundary
+# flip_frac 定邊界位置、flip_low 定率門檻（留空＝用 KmCosConfig 預設 0.5 / 1.0）
+t_max_ratio         = 0.6
+sweep_steps         = 8
+k_decay             = 0.75
+flip_frac            = 0.1
+flip_low             = 0.1
+control_repeats     = 5
+gen_max_tokens      = 128

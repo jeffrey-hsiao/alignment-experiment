@@ -1,0 +1,19 @@
+# 選點 + 多強度（第三維）搜尋：每個 shift_scale 各跑一次崩壞驅動的由上往下搜尋。
+# 強度清單取自不選點對照：全神經元偏移時 s 翻轉出現在 0.4~0.7、1.0 全崩壞。
+# 其餘與 close-v2-desc10（run 025）相同，只把編輯換成 shift。
+seeds               = data/seeds/km_cos_persona_prompts.jsonl
+model_name          = Qwen/Qwen2.5-1.5B-Instruct
+target_system_file  = MLOps/train/configs/km_cos/persona_close-v2.txt
+base_system_file    = MLOps/train/configs/km_cos/persona_base_close-v2.txt
+sign                = both
+edit                = shift
+shift_scale         = 1.0,0.6,0.4
+search              = descent
+collapse_high       = 0.1
+t_max_ratio         = 0.6
+sweep_steps         = 8
+k_decay             = 0.75
+flip_low            = 0.3
+control_repeats     = 2
+gen_max_tokens      = 128
+n_steps             = 8

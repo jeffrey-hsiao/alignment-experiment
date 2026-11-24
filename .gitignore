@@ -64,6 +64,13 @@ MLOps/train/configs/km_cos/*km_cos_cont_*
 # config 執行期的日期快照展開目錄（configs/<method>/<stem>/<YYYYMMDD>.txt）。
 # run.py 的 _snapshot_config 會在缺資料夾時自動 mkdir 重建，故整個資料夾不需版控。
 MLOps/train/configs/*/*/
+# 例外：GUI 存的 system prompt 檔（configs/<method>/_system/<stem>.txt）被 config 的 system_file
+# 引用，必須跟 config 一起進版控，否則別台 clone 下來會找不到檔案
+!MLOps/train/configs/*/_system/
 
 # Claude Code 個人設定
 .claude/
+
+# Discord 部署（run.py dc）：個人自用，整個不進版控——程式本體與 bot token 都不推
+MLOps/dc_bot.py
+MLOps/.dc_token

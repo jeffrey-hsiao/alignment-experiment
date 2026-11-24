@@ -7,9 +7,10 @@
   python retrain.py experiments/dpo_v1_20260617_001 checkpoint-100
 """
 
-import json
 import sys
 from pathlib import Path
+
+from model_registry import read_summary
 
 
 def list_checkpoints(exp_dir):
@@ -20,7 +21,7 @@ def list_checkpoints(exp_dir):
         print(f"❌ 找不到: {summary_path}")
         return None, None
 
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary = read_summary(summary_path)
     ckpt_details = summary.get("checkpoint_details", {})
 
     if not ckpt_details:

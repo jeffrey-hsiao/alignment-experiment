@@ -1,0 +1,17 @@
+# 似然度翻轉判定的第一個實測：與 close-v2 同人格（貓娘）、同 seeds、同編輯方式（無向量，
+# select_tables 歸零＋取負），只換翻轉判定。n_steps 用 8 與 prune_v2 一致。
+seeds               = data/seeds/km_cos_persona_prompts.jsonl
+model_name          = Qwen/Qwen2.5-1.5B-Instruct
+target_system_file  = MLOps/train/configs/km_cos/persona_close-v2.txt
+base_system_file    = MLOps/train/configs/km_cos/persona_base_close-v2.txt
+sign                = both
+reverse_type        = true
+t_max_ratio         = 0.6
+sweep_steps         = 8
+k_decay             = 0.75
+flip_low            = 0.3
+control_repeats     = 2
+gen_max_tokens      = 128
+n_steps             = 8
+# 舊編輯方式（歸零＋取負 + run_sweep）；KmCosConfig 預設已改為 shift，這裡明寫以重現 run 022
+edit                = legacy
